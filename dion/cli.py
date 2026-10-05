@@ -103,11 +103,22 @@ def play_or_download(
     output_dir: Optional[Path] = None,
     auto_select: bool = False,
     sub_delay: Optional[float] = None,
+    start_time: Optional[float] = None,
 ) -> bool:
     """Resolve stream and launch player or downloader. Returns True if played/downloaded successfully."""
     show_media_info(media, episode)
 
     pm = get_provider_manager()
+    history_mgr = get_history_mgr()
+
+    # Determine resume start time if streaming and not explicitly specified
+    if start_time is None and not download:
+        start_time = history_mgr.get_playback_position(
+            media.imdb_id,
+            season=episode.season if episode else None,
+            episode=episode.episode if episode else None,
+        )
+
     with console.status("[bold cyan]Resolving streaming sources...[/bold cyan]"):
         if episode:
             sources = pm.resolve_episode(
@@ -139,17 +150,35 @@ def play_or_download(
             )
             return status == 0
         else:
-            get_history_mgr().record_watch(media=media, episode=episode)
+            history_mgr.record_watch(
+                media=media,
+                episode=episode,
+                playback_position=start_time or 0.0,
+            )
             if sub_delay is not None:
-                get_history_mgr().set_sub_delay(media.imdb_id, sub_delay)
+                history_mgr.set_sub_delay(media.imdb_id, sub_delay)
+
+            if start_time and start_time > 10:
+                total_s = int(start_time)
+                hrs = total_s // 3600
+                mins = (total_s % 3600) // 60
+                secs = total_s % 60
+                time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins:02d}:{secs:02d}"
+                console.print(f"[bold green]▶ Resuming playback at {time_str}...[/bold green]")
+
             exit_code = get_player().play(
                 source=source,
                 media=media,
                 episode=episode,
+                start_time=start_time,
                 sub_delay=sub_delay,
             )
-            console.clear()
-            if exit_code == 0:
+            # Exit codes 0 (normal finish/quit), 4 (signal/VO quit), -2 (SIGINT), -15 (SIGTERM)
+            # all indicate normal user quit or playback completion.
+            if exit_code in (0, 4, -2, -15):
+                # Update watch history with latest saved position from Lua engine
+                history_mgr.record_watch(media=media, episode=episode)
+                console.clear()
                 return True
 
             sources = [s for s in sources if s != source]
@@ -226,6 +255,8 @@ def main(
             console.print("[bold red]Failed to retrieve metadata for title.[/bold red]")
             raise typer.Exit(1)
 
+        saved_pos = float(selected.get("position", 0.0))
+
         if media_type == MediaType.SERIES:
             all_episodes = metadata_client.get_episodes(details.imdb_id)
             s_num = selected.get("season", 1)
@@ -245,6 +276,7 @@ def main(
                 output_dir,
                 best,
                 sub_delay=sub_delay,
+                start_time=saved_pos,
             )
             return
         else:
@@ -255,8 +287,8 @@ def main(
                 output_dir,
                 best,
                 sub_delay=sub_delay,
+                start_time=saved_pos,
             )
-            console.clear()
             return
 
     # 3. Interactive prompt if no query
@@ -289,7 +321,6 @@ def main(
             auto_select=best,
             sub_delay=sub_delay,
         )
-        console.clear()
     else:
         # TV Series
         with console.status("[bold cyan]Fetching episodes...[/bold cyan]"):
@@ -341,10 +372,12 @@ def _binge_loop(
     output_dir: Optional[Path],
     best: bool,
     sub_delay: Optional[float] = None,
+    start_time: Optional[float] = None,
 ) -> None:
     """Handles episode playback and prompts for the next episode when finished."""
     ep = current_episode
     active_sub_delay = sub_delay
+    active_start_time = start_time
     while ep:
         success = play_or_download(
             media=media,
@@ -353,31 +386,44 @@ def _binge_loop(
             output_dir=output_dir,
             auto_select=best,
             sub_delay=active_sub_delay,
+            start_time=active_start_time,
         )
         # For subsequent episodes, allow player to read the latest saved delay from storage
         active_sub_delay = None
+        active_start_time = None
 
         if not success or download:
-            console.clear()
             break
 
         console.clear()
 
         # Find the next sequential episode
-        current_idx = all_episodes.index(ep)
-        if current_idx + 1 < len(all_episodes):
+        current_idx = next(
+            (
+                i
+                for i, item in enumerate(all_episodes)
+                if item.id == ep.id
+                or (item.season == ep.season and item.episode == ep.episode)
+            ),
+            -1,
+        )
+        if current_idx != -1 and current_idx + 1 < len(all_episodes):
             next_ep = all_episodes[current_idx + 1]
             choices = [
                 (f"▶ Watch next episode ({next_ep.display_name})", next_ep),
+                (f"↺ Replay current episode ({ep.display_name})", "replay"),
                 ("↩ Return to episode selection", "select_episode"),
                 ("✕ Exit", "exit"),
             ]
-            action = prompt_select(f"Finished {ep.display_name}", choices)
+            action = prompt_select(f"{ep.display_name}", choices)
             console.clear()
             if not action or action == "exit" or action is False:
                 break
             elif isinstance(action, EpisodeItem):
                 ep = action
+                active_start_time = None
+            elif action == "replay":
+                active_start_time = 0.0
             elif action == "select_episode":
                 # Re-select episode
                 chosen_season = select_season(all_episodes)
@@ -392,8 +438,26 @@ def _binge_loop(
                 break
         else:
             console.clear()
-            console.print("[bold green]🎉 You have reached the end of the series![/bold green]")
-            break
+            choices = [
+                (f"↺ Replay current episode ({ep.display_name})", "replay"),
+                ("↩ Return to episode selection", "select_episode"),
+                ("✕ Exit", "exit"),
+            ]
+            action = prompt_select(f"{ep.display_name} (End of series)", choices)
+            console.clear()
+            if action == "replay":
+                active_start_time = 0.0
+            elif action == "select_episode":
+                chosen_season = select_season(all_episodes)
+                console.clear()
+                if not chosen_season:
+                    break
+                ep = select_episode(all_episodes, chosen_season)
+                console.clear()
+                if not ep:
+                    break
+            else:
+                break
 
 
 if __name__ == "__main__":

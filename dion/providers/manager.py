@@ -8,6 +8,7 @@ from ..metadata.models import StreamSource
 from .base import BaseProvider
 from .subtitles import SubtitleResolver
 from .vidora import VidoraProvider
+from .vixsrc import VixSrcProvider
 
 console = Console()
 
@@ -17,6 +18,7 @@ class ProviderManager:
 
     def __init__(self):
         self.providers: List[BaseProvider] = [
+            VixSrcProvider(),
             VidoraProvider(),
         ]
         self.subtitle_resolver = SubtitleResolver()

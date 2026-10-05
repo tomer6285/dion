@@ -35,14 +35,27 @@ class MpvPlayer:
         scripts_dir.mkdir(parents=True, exist_ok=True)
         script_file = scripts_dir / "dion_subtitles.lua"
 
-        lua_code = """-- Dion Subtitle Synchronization & OSD Engine
+        lua_code = """-- Dion Subtitle Synchronization & Playback Resume Engine
 local mp = require 'mp'
 
 local imdb_id = mp.get_opt("dion_imdb", "")
 if imdb_id == "" then imdb_id = mp.get_opt("dionysus_imdb", "") end
 local config_dir = mp.get_opt("dion_config", "")
 if config_dir == "" then config_dir = mp.get_opt("dionysus_config", "") end
+if config_dir == "" then
+    local home = os.getenv("HOME") or ""
+    if home ~= "" then config_dir = home .. "/.config/dion" end
+end
+local season = mp.get_opt("dion_season", "")
+local episode = mp.get_opt("dion_episode", "")
+
 local delays_file = (config_dir ~= "") and (config_dir .. "/sub_delays.json") or nil
+local pos_file = (config_dir ~= "") and (config_dir .. "/playback_positions.json") or nil
+
+local pos_key = imdb_id
+if season ~= "" and episode ~= "" then
+    pos_key = imdb_id .. ":" .. season .. ":" .. episode
+end
 
 local function load_saved_delay()
     if not delays_file or imdb_id == "" then return 0.0 end
@@ -79,6 +92,45 @@ local function save_delay(delay)
             if not first then out:write(",\\n") end
             first = false
             out:write(string.format('  "%s": %.2f', k, v))
+        end
+        out:write("\\n}\\n")
+        out:close()
+    end
+end
+
+local function save_position(force_pos)
+    if not pos_file or pos_key == "" then return end
+    local pos = force_pos or mp.get_property_number("time-pos", 0.0)
+    local duration = mp.get_property_number("duration", 0.0)
+    if force_pos == nil then
+        if not pos or pos <= 0 then return end
+        if duration and duration > 60 and (pos >= duration - 30 or pos >= duration * 0.95) then
+            pos = 0.0
+        elseif pos < 10 then
+            return
+        end
+    end
+
+    local data = {}
+    local f = io.open(pos_file, "r")
+    if f then
+        local content = f:read("*all")
+        f:close()
+        if content then
+            for k, v in content:gmatch('"([^"]+)"%s*:%s*([%-0-9%.]+)') do
+                data[k] = tonumber(v)
+            end
+        end
+    end
+    data[pos_key] = math.floor(pos * 10 + 0.5) / 10
+    local out = io.open(pos_file, "w")
+    if out then
+        out:write("{\\n")
+        local first = true
+        for k, v in pairs(data) do
+            if not first then out:write(",\\n") end
+            first = false
+            out:write(string.format('  "%s": %.1f', k, v))
         end
         out:write("\\n}\\n")
         out:close()
@@ -134,14 +186,26 @@ end
 mp.add_forced_key_binding("j", "dion_sub_cycle_fwd", function() cycle_sub(1) end)
 mp.add_forced_key_binding("J", "dion_sub_cycle_back", function() cycle_sub(-1) end)
 
--- Initial banner on playback start
+-- Initial banner on playback start & restore subtitle delay
 mp.register_event("file-loaded", function()
     local saved = load_saved_delay()
     if math.abs(saved) > 0.01 then
         mp.set_property_number("sub-delay", saved)
     end
 
-    mp.add_timeout(1.2, function()
+    mp.add_timeout(0.6, function()
+        local pos = mp.get_property_number("time-pos", 0.0)
+        if pos and pos > 10 then
+            local total_s = math.floor(pos)
+            local hrs = math.floor(total_s / 3600)
+            local mins = math.floor((total_s % 3600) / 60)
+            local secs = total_s % 60
+            local time_str = (hrs > 0) and string.format("%02d:%02d:%02d", hrs, mins, secs) or string.format("%02d:%02d", mins, secs)
+            mp.osd_message(string.format("▶ Resumed at %s", time_str), 2.5)
+        end
+    end)
+
+    mp.add_timeout(1.5, function()
         local sid = mp.get_property("sid")
         if sid and sid ~= "no" then
             local current = mp.get_property_number("sub-delay", 0.0)
@@ -154,6 +218,46 @@ mp.register_event("file-loaded", function()
             mp.osd_message(string.format("💬 Subtitle: %s%s\\n• Adjust: z/x (±0.1s)  Z/X (±0.5s)  j (cycle)", title, delay_info), 4.0)
         end
     end)
+end)
+
+-- Periodic position persistence (every 5 seconds while playing)
+mp.add_periodic_timer(5.0, function()
+    local paused = mp.get_property_bool("pause", false)
+    if not paused then
+        save_position()
+    end
+end)
+
+-- Observe pause property: save position whenever paused
+mp.observe_property("pause", "bool", function(name, paused)
+    if paused then
+        save_position()
+    end
+end)
+
+-- Window close & quit bindings: ensure closing the window or quitting exits mpv cleanly and saves position
+local function quit_player()
+    save_position()
+    mp.command("quit 0")
+end
+
+mp.add_forced_key_binding("CLOSE_WIN", "dion_close_win", quit_player)
+mp.add_forced_key_binding("q", "dion_quit_q", quit_player)
+mp.add_forced_key_binding("Q", "dion_quit_Q", quit_player)
+mp.add_forced_key_binding("Meta+w", "dion_cmd_w", quit_player)
+mp.add_forced_key_binding("Meta+q", "dion_cmd_q", quit_player)
+
+mp.register_event("end-file", function(event)
+    if event and event.reason == "eof" then
+        save_position(0.0)
+    else
+        save_position()
+    end
+    mp.command("quit 0")
+end)
+
+mp.register_event("shutdown", function()
+    save_position()
 end)
 """
         script_file.write_text(lua_code, encoding="utf-8")
@@ -192,6 +296,16 @@ end)
 
         cmd = [self.executable]
 
+        # Prepare script-opts
+        script_opts = [
+            f"dion_imdb={media.imdb_id}",
+            f"dion_config={config_dir}",
+        ]
+        if episode:
+            script_opts.append(f"dion_season={episode.season}")
+            script_opts.append(f"dion_episode={episode.episode}")
+        script_opts_str = ",".join(script_opts)
+
         if is_mpv:
             # Suppress all terminal output
             cmd.append("--really-quiet")
@@ -200,7 +314,6 @@ end)
 
             # Set window title
             cmd.append(f"--title=Dion: {title_str}")
-            cmd.append("--save-position-on-quit")
 
             # Hardware acceleration (VideoToolbox on macOS, VAAPI/NVDEC on Linux)
             cmd.append("--hwdec=auto")
@@ -224,12 +337,12 @@ end)
                 if k.lower() not in ("user-agent", "referer"):
                     cmd.append(f"--http-header-fields-append={k}: {v}")
 
-            # Stream connection stability & reconnection:
-            # - seg_max_retry=5: retries transient segment errors rather than skipping (preventing A/V desync)
-            # - reconnect_on_http_error=4xx,5xx: automatically retries temporary CDN errors
-            cmd.append(
-                r"--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx\,5xx,reconnect_delay_max=2,seg_max_retry=5"
-            )
+            # Stream connection stability:
+            # Reconnect on dropped connections without treating playlist EOF as a severed stream
+            cmd.append("--demuxer-lavf-o=reconnect=1,reconnect_delay_max=2")
+            cmd.append("--force-window=immediate")
+            cmd.append("--keep-open=no")
+            cmd.append("--idle=no")
 
             # High-performance buffering and non-blocking playback
             cmd.append("--cache=yes")
@@ -249,7 +362,8 @@ end)
             cmd.append("--hr-seek-framedrop=yes")
             cmd.append("--correct-pts=yes")
 
-            # Preferred subtitle language & synchronization engine
+            # Preferred audio & subtitle language & synchronization engine
+            cmd.append("--alang=en,eng,English")
             cmd.append("--slang=en,eng,English")
             cmd.append("--sub-auto=fuzzy")
             cmd.append("--sub-fix-timing=yes")
@@ -258,7 +372,7 @@ end)
 
             # Attach Dion Lua script and pass context parameters
             cmd.append(f"--script={lua_script}")
-            cmd.append(f"--script-opts=dion_imdb={media.imdb_id},dion_config={config_dir}")
+            cmd.append(f"--script-opts={script_opts_str}")
 
             # Add subtitles (top ranked tracks)
             for sub in source.subtitles[:3]:
@@ -273,9 +387,9 @@ end)
             cmd.append("--mpv-hwdec=auto")
             cmd.append("--mpv-profile=fast")
             cmd.append("--mpv-really-quiet")
-            cmd.append(
-                r"--mpv-demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx\,5xx,reconnect_delay_max=2,seg_max_retry=5"
-            )
+            cmd.append("--mpv-demuxer-lavf-o=reconnect=1,reconnect_delay_max=2")
+            cmd.append("--mpv-keep-open=no")
+            cmd.append("--mpv-idle=no")
             cmd.append("--mpv-cache=yes")
             cmd.append("--mpv-cache-pause=no")
             cmd.append("--mpv-cache-pause-initial=no")
@@ -293,14 +407,17 @@ end)
             for k, v in source.headers.items():
                 if k.lower() not in ("user-agent", "referer"):
                     cmd.append(f"--mpv-http-header-fields-append={k}: {v}")
+            cmd.append("--mpv-alang=en,eng,English")
             cmd.append("--mpv-slang=en,eng,English")
             cmd.append("--mpv-sub-fix-timing=yes")
             if sub_delay and abs(sub_delay) > 0.01:
                 cmd.append(f"--mpv-sub-delay={sub_delay}")
             cmd.append(f"--mpv-script={lua_script}")
-            cmd.append(f"--mpv-script-opts=dion_imdb={media.imdb_id},dion_config={config_dir}")
+            cmd.append(f"--mpv-script-opts={script_opts_str}")
             for sub in source.subtitles[:3]:
                 cmd.append(f"--mpv-sub-file={sub.url}")
+            if start_time and start_time > 10:
+                cmd.append(f"--mpv-start={int(start_time)}")
 
         elif "vlc" in self.executable.lower():
             cmd.append(f"--meta-title={title_str}")
@@ -315,6 +432,8 @@ end)
                 cmd.append(f"--sub-delay={sub_delay}")
             if source.subtitles:
                 cmd.append(f"--sub-file={source.subtitles[0].url}")
+            if start_time and start_time > 10:
+                cmd.append(f"--start-time={int(start_time)}")
 
         # Target video URL
         cmd.append(source.url)

@@ -169,10 +169,12 @@ def format_history_choice(item: Dict[str, Any], ansi: bool = True) -> str:
 
     # Playback resume position if available
     pos = item.get("position", 0.0)
-    if isinstance(pos, (int, float)) and pos > 60:
-        mins = int(pos // 60)
-        secs = int(pos % 60)
-        pos_str = f"at {mins:02d}:{secs:02d}"
+    if isinstance(pos, (int, float)) and pos > 10:
+        total_secs = int(pos)
+        hrs = total_secs // 3600
+        mins = (total_secs % 3600) // 60
+        secs = total_secs % 60
+        pos_str = f"at {hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"at {mins:02d}:{secs:02d}"
         if ansi:
             pos_str = f"\033[33m{pos_str}\033[0m"
         parts.append(pos_str)

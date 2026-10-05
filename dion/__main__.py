@@ -1,4 +1,4 @@
-from dionysus.cli import app
+from dion.cli import app
 
 if __name__ == "__main__":
     app()

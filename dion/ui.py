@@ -592,8 +592,6 @@ def select_source(sources: List[StreamSource]) -> Optional[StreamSource]:
     choices: List[Tuple[str, StreamSource]] = []
     for s in sources:
         label = f"[{s.server.upper()}] Quality: {s.quality}"
-        if s.subtitles:
-            label += f" ({len(s.subtitles)} subtitles)"
         choices.append((label, s))
 
     return prompt_select("Select stream source", choices)

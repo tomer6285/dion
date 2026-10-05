@@ -172,6 +172,29 @@ mp.add_forced_key_binding("X", "dion_sub_up_coarse", function() add_sub_delay(0.
 -- Ctrl+z: reset to 0.0s
 mp.add_forced_key_binding("ctrl+z", "dion_sub_reset", reset_sub_delay)
 
+-- v: toggle subtitles on / off
+local function toggle_sub()
+    local sid = mp.get_property("sid")
+    if sid == "no" or not sid then
+        mp.set_property("sid", "auto")
+        local new_sid = mp.get_property("sid")
+        if new_sid == "no" or not new_sid then
+            mp.commandv("cycle", "sub", "up")
+            new_sid = mp.get_property("sid")
+        end
+        if new_sid and new_sid ~= "no" then
+            local title = mp.get_property("current-tracks/sub/title") or mp.get_property("current-tracks/sub/lang") or ("Track " .. new_sid)
+            mp.osd_message(string.format("💬 Subtitles: On (%s)", title), 2.5)
+        else
+            mp.osd_message("💬 Subtitles: None available", 2.0)
+        end
+    else
+        mp.set_property("sid", "no")
+        mp.osd_message("💬 Subtitles: Off", 2.0)
+    end
+end
+mp.add_forced_key_binding("v", "dion_sub_toggle", toggle_sub)
+
 -- j / J: cycle subtitle tracks with clean OSD
 local function cycle_sub(step)
     mp.commandv("cycle", "sub", step > 0 and "up" or "down")
@@ -367,6 +390,7 @@ end)
             cmd.append("--slang=en,eng,English")
             cmd.append("--sub-auto=fuzzy")
             cmd.append("--sub-fix-timing=yes")
+            cmd.append("--sid=no")
             if sub_delay and abs(sub_delay) > 0.01:
                 cmd.append(f"--sub-delay={sub_delay}")
 
@@ -374,8 +398,8 @@ end)
             cmd.append(f"--script={lua_script}")
             cmd.append(f"--script-opts={script_opts_str}")
 
-            # Add subtitles (top ranked tracks)
-            for sub in source.subtitles[:3]:
+            # Add subtitles
+            for sub in source.subtitles:
                 cmd.append(f"--sub-file={sub.url}")
 
             # Resume position if provided
@@ -410,11 +434,12 @@ end)
             cmd.append("--mpv-alang=en,eng,English")
             cmd.append("--mpv-slang=en,eng,English")
             cmd.append("--mpv-sub-fix-timing=yes")
+            cmd.append("--mpv-sid=no")
             if sub_delay and abs(sub_delay) > 0.01:
                 cmd.append(f"--mpv-sub-delay={sub_delay}")
             cmd.append(f"--mpv-script={lua_script}")
             cmd.append(f"--mpv-script-opts={script_opts_str}")
-            for sub in source.subtitles[:3]:
+            for sub in source.subtitles:
                 cmd.append(f"--mpv-sub-file={sub.url}")
             if start_time and start_time > 10:
                 cmd.append(f"--mpv-start={int(start_time)}")
@@ -422,6 +447,7 @@ end)
         elif "vlc" in self.executable.lower():
             cmd.append(f"--meta-title={title_str}")
             cmd.append("--quiet")
+            cmd.append("--no-spu")
             ref = source.headers.get("Referer") or source.headers.get("referer")
             if ref:
                 cmd.append(f"--http-referrer={ref}")
@@ -430,8 +456,8 @@ end)
                 cmd.append(f"--http-user-agent={ua}")
             if sub_delay and abs(sub_delay) > 0.01:
                 cmd.append(f"--sub-delay={sub_delay}")
-            if source.subtitles:
-                cmd.append(f"--sub-file={source.subtitles[0].url}")
+            for sub in source.subtitles:
+                cmd.append(f"--sub-file={sub.url}")
             if start_time and start_time > 10:
                 cmd.append(f"--start-time={int(start_time)}")
 

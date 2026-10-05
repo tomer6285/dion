@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 
 from .metadata import EpisodeItem, MediaItem, MediaType
 from .ui import (
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from .metadata import CinemetaClient
     from .player import MpvPlayer, StreamDownloader
     from .providers import ProviderManager
-    from .storage import HistoryManager
+    from .storage import HistoryManager, SettingsManager
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
@@ -40,6 +41,7 @@ _provider_manager: Optional[ProviderManager] = None
 _player: Optional[MpvPlayer] = None
 _downloader: Optional[StreamDownloader] = None
 _history_mgr: Optional[HistoryManager] = None
+_settings_mgr: Optional[SettingsManager] = None
 
 
 def get_metadata_client() -> CinemetaClient:
@@ -58,11 +60,19 @@ def get_provider_manager() -> ProviderManager:
     return _provider_manager
 
 
+def get_settings_mgr() -> SettingsManager:
+    global _settings_mgr
+    if _settings_mgr is None:
+        from .storage import SettingsManager
+        _settings_mgr = SettingsManager()
+    return _settings_mgr
+
+
 def get_player() -> MpvPlayer:
     global _player
     if _player is None:
         from .player import MpvPlayer
-        _player = MpvPlayer()
+        _player = MpvPlayer(settings_mgr=get_settings_mgr())
     return _player
 
 
@@ -87,6 +97,8 @@ def __getattr__(name: str):
         return get_metadata_client()
     if name == "provider_manager":
         return get_provider_manager()
+    if name == "settings_mgr":
+        return get_settings_mgr()
     if name == "player":
         return get_player()
     if name == "downloader":
@@ -192,6 +204,135 @@ def play_or_download(
     return False
 
 
+def interactive_settings_menu() -> None:
+    settings_mgr = get_settings_mgr()
+    while True:
+        console.clear()
+
+        player_pref = settings_mgr.player
+        resolved_path = settings_mgr.resolve_player_executable()
+        if player_pref == "auto":
+            resolved_name = Path(resolved_path).name if resolved_path else "None found"
+            player_desc = f"Auto-detect (Using: {resolved_name})"
+        elif resolved_path:
+            player_desc = f"{player_pref} ({resolved_path})"
+        else:
+            player_desc = f"{player_pref} [Not Found]"
+
+        subs_desc = "Enabled (On launch)" if settings_mgr.subtitles_enabled else "Disabled (Off on launch)"
+        server_desc = "Enabled (Auto-select first server)" if settings_mgr.auto_select_server else "Disabled (Prompt each time)"
+        lang_desc = settings_mgr.sub_lang.upper()
+        dl_desc = str(settings_mgr.download_dir)
+
+        console.print(
+            Panel(
+                "[bold cyan]⚙️  Dion Settings[/bold cyan]\n"
+                "[dim]Configure default video player, launch subtitles, download directory, and playback defaults.[/dim]",
+                border_style="cyan",
+                expand=False,
+            )
+        )
+
+        choices = [
+            (f"🎬 Default Player: {player_desc}", "player"),
+            (f"💬 Subtitles on launch: {subs_desc}", "subtitles"),
+            (f"🌐 Preferred Subtitle Language: {lang_desc}", "sub_lang"),
+            (f"⚡ Auto-select server: {server_desc}", "auto_server"),
+            (f"📂 Default Download Directory: {dl_desc}", "download_dir"),
+            ("↺ Reset all settings to defaults", "reset"),
+            ("↩ Save & Exit", "exit"),
+        ]
+
+        action = prompt_select("Select setting to configure", choices)
+        if not action or action == "exit" or action is False:
+            console.clear()
+            break
+
+        if action == "player":
+            console.clear()
+            installed = settings_mgr.get_installed_players()
+            player_choices = [
+                ("Auto-detect (automatically use best available: mpv > iina > vlc)", "auto"),
+            ]
+            for p in installed:
+                player_choices.append((f"{p['name']} ({p['path']})", p["name"]))
+            player_choices.append(("Custom binary or full path...", "custom"))
+            player_choices.append(("↩ Cancel", "cancel"))
+
+            chosen_player = prompt_select("Choose Default Video Player", player_choices)
+            if chosen_player == "custom":
+                custom_val = typer.prompt("Enter player binary or path").strip()
+                if custom_val:
+                    settings_mgr.set("player", custom_val)
+                    global _player
+                    _player = None
+            elif chosen_player and chosen_player != "cancel":
+                settings_mgr.set("player", chosen_player)
+                _player = None
+
+        elif action == "subtitles":
+            console.clear()
+            sub_choices = [
+                ("❌ Disabled (Off by default on launch - clean screen)", False),
+                ("✅ Enabled (On by default on launch)", True),
+                ("↩ Cancel", "cancel"),
+            ]
+            chosen_sub = prompt_select("Subtitles on Launch", sub_choices)
+            if chosen_sub in (True, False):
+                settings_mgr.set("subtitles_enabled", chosen_sub)
+
+        elif action == "sub_lang":
+            console.clear()
+            lang_choices = [
+                ("English (en)", "en"),
+                ("Spanish (es)", "es"),
+                ("French (fr)", "fr"),
+                ("German (de)", "de"),
+                ("Italian (it)", "it"),
+                ("Portuguese (pt)", "pt"),
+                ("Arabic (ar)", "ar"),
+                ("Japanese (ja)", "ja"),
+                ("Custom ISO language code...", "custom"),
+                ("↩ Cancel", "cancel"),
+            ]
+            chosen_lang = prompt_select("Select Preferred Subtitle Language", lang_choices)
+            if chosen_lang == "custom":
+                custom_lang = typer.prompt("Enter 2-letter language code (e.g. en, es, fr)").strip().lower()
+                if custom_lang:
+                    settings_mgr.set("sub_lang", custom_lang)
+            elif chosen_lang and chosen_lang != "cancel":
+                settings_mgr.set("sub_lang", chosen_lang)
+
+        elif action == "auto_server":
+            console.clear()
+            server_choices = [
+                ("Prompt me (Choose server each time)", False),
+                ("Auto-select (Instantly stream first working server)", True),
+                ("↩ Cancel", "cancel"),
+            ]
+            chosen_server = prompt_select("Auto-select Server", server_choices)
+            if chosen_server in (True, False):
+                settings_mgr.set("auto_select_server", chosen_server)
+
+        elif action == "download_dir":
+            console.clear()
+            new_dir = typer.prompt(
+                "Enter default download directory",
+                default=str(settings_mgr.download_dir),
+            ).strip()
+            if new_dir:
+                p = Path(new_dir).expanduser()
+                p.mkdir(parents=True, exist_ok=True)
+                settings_mgr.set("download_dir", str(p))
+
+        elif action == "reset":
+            console.clear()
+            confirm = typer.confirm("Reset all settings to default values?")
+            if confirm:
+                settings_mgr.reset()
+                _player = None
+
+
 @app.command(context_settings=CONTEXT_SETTINGS)
 def main(
     query: Optional[str] = typer.Argument(
@@ -208,6 +349,9 @@ def main(
     ),
     delete_history: bool = typer.Option(
         False, "-D", "--delete-history", help="Delete watch history."
+    ),
+    settings: bool = typer.Option(
+        False, "-S", "--settings", help="Open settings menu to configure default player, subtitles, and preferences."
     ),
     season_arg: Optional[int] = typer.Option(
         None, "-s", "--season", help="Specific season number for TV shows."
@@ -226,10 +370,20 @@ def main(
     ),
 ):
     """Search, stream, and binge movies and TV shows directly in your terminal."""
+    # 0. Handle settings menu
+    if settings:
+        interactive_settings_menu()
+        raise typer.Exit(0)
+
     metadata_client = get_metadata_client()
     history_mgr = get_history_mgr()
+    settings_mgr = get_settings_mgr()
 
-    # 0. Handle delete history
+    if output_dir is None:
+        output_dir = settings_mgr.download_dir
+    best = best or settings_mgr.auto_select_server
+
+    # 1. Handle delete history
     if delete_history:
         history_mgr.clear_history()
         console.print("[bold green]✓ Watch history deleted successfully.[/bold green]")

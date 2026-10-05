@@ -8,7 +8,7 @@ from typing import List, Optional
 from rich.console import Console
 
 from ..metadata.models import EpisodeItem, MediaItem, StreamSource
-from ..storage import HistoryManager
+from ..storage import HistoryManager, SettingsManager
 
 console = Console()
 
@@ -16,8 +16,13 @@ console = Console()
 class MpvPlayer:
     """Controls playback via mpv (with fallback to VLC/IINA)."""
 
-    def __init__(self, executable: Optional[str] = None):
-        self.executable = executable or self._find_player()
+    def __init__(
+        self,
+        executable: Optional[str] = None,
+        settings_mgr: Optional[SettingsManager] = None,
+    ):
+        self.settings_mgr = settings_mgr or SettingsManager()
+        self.executable = executable or self.settings_mgr.resolve_player_executable() or self._find_player()
 
     def _find_player(self) -> Optional[str]:
         for candidate in ["mpv", "iina", "vlc"]:
@@ -329,6 +334,10 @@ end)
             script_opts.append(f"dion_episode={episode.episode}")
         script_opts_str = ",".join(script_opts)
 
+        # Subtitle preferences from settings
+        subtitles_enabled = self.settings_mgr.subtitles_enabled
+        sub_lang = self.settings_mgr.sub_lang or "en"
+
         if is_mpv:
             # Suppress all terminal output
             cmd.append("--really-quiet")
@@ -387,10 +396,11 @@ end)
 
             # Preferred audio & subtitle language & synchronization engine
             cmd.append("--alang=en,eng,English")
-            cmd.append("--slang=en,eng,English")
+            cmd.append(f"--slang={sub_lang},en,eng,English")
             cmd.append("--sub-auto=fuzzy")
             cmd.append("--sub-fix-timing=yes")
-            cmd.append("--sid=no")
+            if not subtitles_enabled:
+                cmd.append("--sid=no")
             if sub_delay and abs(sub_delay) > 0.01:
                 cmd.append(f"--sub-delay={sub_delay}")
 
@@ -432,9 +442,10 @@ end)
                 if k.lower() not in ("user-agent", "referer"):
                     cmd.append(f"--mpv-http-header-fields-append={k}: {v}")
             cmd.append("--mpv-alang=en,eng,English")
-            cmd.append("--mpv-slang=en,eng,English")
+            cmd.append(f"--mpv-slang={sub_lang},en,eng,English")
             cmd.append("--mpv-sub-fix-timing=yes")
-            cmd.append("--mpv-sid=no")
+            if not subtitles_enabled:
+                cmd.append("--mpv-sid=no")
             if sub_delay and abs(sub_delay) > 0.01:
                 cmd.append(f"--mpv-sub-delay={sub_delay}")
             cmd.append(f"--mpv-script={lua_script}")
@@ -447,7 +458,8 @@ end)
         elif "vlc" in self.executable.lower():
             cmd.append(f"--meta-title={title_str}")
             cmd.append("--quiet")
-            cmd.append("--no-spu")
+            if not subtitles_enabled:
+                cmd.append("--no-spu")
             ref = source.headers.get("Referer") or source.headers.get("referer")
             if ref:
                 cmd.append(f"--http-referrer={ref}")

@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import questionary
 from prompt_toolkit.formatted_text import ANSI
@@ -30,7 +30,11 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*[mK]", "", text)
 
 
-def fzf_select(prompt: str, choices: List[Tuple[str, T]]) -> Optional[T]:
+def fzf_select(
+    prompt: str,
+    choices: List[Tuple[str, T]],
+    on_info: Optional[Callable[[T], None]] = None,
+) -> Optional[T]:
     """Run interactive fuzzy selection using fzf."""
     if not choices:
         return None
@@ -46,46 +50,85 @@ def fzf_select(prompt: str, choices: List[Tuple[str, T]]) -> Optional[T]:
         lookup[plain_str] = val
 
     input_text = "\n".join(lines)
+    header = (
+        "Navigate: [↑/↓]  ·  Select: [Enter]  ·  Info: [i]  ·  Cancel: [Esc]"
+        if on_info
+        else "Use arrows/typing to search, Enter to select, Esc to cancel"
+    )
     cmd = [
         "fzf",
         "--ansi",
         "--reverse",
         "--height=50%",
         f"--prompt={prompt} > ",
-        "--header=Use arrows/typing to search, Enter to select, Esc to cancel",
+        f"--header={header}",
         "--cycle",
         "--no-multi",
     ]
+    if on_info:
+        cmd.append("--expect=i")
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=input_text,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
-        selected_line = proc.stdout.strip()
-        if not selected_line:
+    while True:
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=input_text,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            raw = proc.stdout
+            if not raw:
+                return None
+
+            lines_out = raw.splitlines()
+            if on_info and len(lines_out) >= 2 and lines_out[0].strip() == "i":
+                selected_line = lines_out[1].strip()
+                val = lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
+                if val is not None:
+                    console.clear()
+                    on_info(val)
+                    try:
+                        console.input("\n[dim]Press Enter to return to selection...[/dim]")
+                    except (KeyboardInterrupt, EOFError):
+                        pass
+                    console.clear()
+                    continue
+                return None
+            elif on_info and len(lines_out) >= 2:
+                selected_line = lines_out[1].strip()
+                return lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
+            elif lines_out:
+                selected_line = lines_out[0].strip()
+                return lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
             return None
-        return lookup.get(selected_line)
-    except Exception:
-        # Fall back to questionary if fzf encounters issues
-        return questionary_select(prompt, choices)
+        except Exception:
+            # Fall back to questionary if fzf encounters issues
+            return questionary_select(prompt, choices, on_info=on_info)
 
 
-def questionary_select(prompt: str, choices: List[Tuple[str, T]]) -> Optional[T]:
+def questionary_select(
+    prompt: str,
+    choices: List[Tuple[str, T]],
+    on_info: Optional[Callable[[T], None]] = None,
+) -> Optional[T]:
     """Fallback interactive arrow-key selection using questionary."""
     if not choices:
         return None
 
-    q_choices = [questionary.Choice(title=ANSI(display), value=val) for display, val in choices]
-    try:
-        return questionary.select(
+    while True:
+        q_choices = [questionary.Choice(title=ANSI(display), value=val) for display, val in choices]
+        instruction = (
+            "(Use arrows or j/k to navigate, [i] for info, Enter to select)"
+            if on_info
+            else None
+        )
+        q = questionary.select(
             message=prompt,
             choices=q_choices,
             use_jk_keys=True,
+            instruction=instruction,
             style=questionary.Style(
                 [
                     ("qmark", "fg:#ff79c6 bold"),
@@ -96,16 +139,47 @@ def questionary_select(prompt: str, choices: List[Tuple[str, T]]) -> Optional[T]
                     ("selected", "fg:#50fa7b"),
                 ]
             ),
-        ).ask()
-    except (KeyboardInterrupt, Exception):
-        return None
+        )
+
+        if on_info:
+            ic = None
+            for c in q.application.layout.find_all_controls():
+                if hasattr(c, "get_pointed_at"):
+                    ic = c
+                    break
+
+            if ic is not None:
+                @q.application.key_bindings.add("i", eager=True)
+                def _(event, control=ic):
+                    val = control.get_pointed_at().value
+                    event.app.exit(result=("__info__", val))
+
+        try:
+            res = q.ask()
+            if isinstance(res, tuple) and len(res) == 2 and res[0] == "__info__":
+                val = res[1]
+                console.clear()
+                on_info(val)
+                try:
+                    console.input("\n[dim]Press Enter to return to selection...[/dim]")
+                except (KeyboardInterrupt, EOFError):
+                    pass
+                console.clear()
+                continue
+            return res
+        except (KeyboardInterrupt, Exception):
+            return None
 
 
-def prompt_select(prompt: str, choices: List[Tuple[str, T]]) -> Optional[T]:
+def prompt_select(
+    prompt: str,
+    choices: List[Tuple[str, T]],
+    on_info: Optional[Callable[[T], None]] = None,
+) -> Optional[T]:
     """Select an item using fzf if available, otherwise questionary."""
     if has_fzf():
-        return fzf_select(prompt, choices)
-    return questionary_select(prompt, choices)
+        return fzf_select(prompt, choices, on_info=on_info)
+    return questionary_select(prompt, choices, on_info=on_info)
 
 
 def format_relative_time(iso_str: Optional[str]) -> str:
@@ -566,7 +640,11 @@ def select_season(episodes: List[EpisodeItem]) -> Optional[int]:
     return prompt_select("Select season", choices)
 
 
-def select_episode(episodes: List[EpisodeItem], season: int) -> Optional[EpisodeItem]:
+def select_episode(
+    episodes: List[EpisodeItem],
+    season: int,
+    media: Optional[MediaItem] = None,
+) -> Optional[EpisodeItem]:
     """Prompt user to choose an episode in the selected season."""
     season_episodes = [ep for ep in episodes if ep.season == season]
     if not season_episodes:
@@ -579,7 +657,19 @@ def select_episode(episodes: List[EpisodeItem], season: int) -> Optional[Episode
             label += f" ({ep.released[:10]})"
         choices.append((label, ep))
 
-    return prompt_select(f"Select episode for Season {season}", choices)
+    def on_info(ep: EpisodeItem) -> None:
+        if media:
+            show_media_info(media, ep)
+        else:
+            dummy_media = MediaItem(
+                id=ep.id,
+                imdb_id=ep.id.split(":")[0] if ":" in ep.id else "",
+                title=f"Season {season}",
+                media_type=MediaType.SERIES,
+            )
+            show_media_info(dummy_media, ep)
+
+    return prompt_select(f"Select episode for Season {season}", choices, on_info=on_info)
 
 
 def select_source(sources: List[StreamSource]) -> Optional[StreamSource]:

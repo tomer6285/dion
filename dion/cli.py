@@ -434,10 +434,46 @@ def main(
                         except Exception:
                             pass
 
+        def on_history_info(item: Dict[str, Any]) -> None:
+            imdb_id = item.get("imdb_id")
+            if not imdb_id:
+                return
+            m_type = MediaType(item.get("media_type", "movie"))
+            s_num = item.get("season")
+            e_num = item.get("episode")
+
+            with console.status("[bold cyan]Fetching information...[/bold cyan]"):
+                details = metadata_client.get_details(m_type, imdb_id)
+                if not details:
+                    details = MediaItem(
+                        id=imdb_id,
+                        imdb_id=imdb_id,
+                        title=item.get("title", "Unknown"),
+                        media_type=m_type,
+                        year=item.get("year"),
+                    )
+
+                ep = None
+                if m_type == MediaType.SERIES and s_num is not None and e_num is not None:
+                    eps = metadata_client.get_episodes(imdb_id)
+                    ep = next(
+                        (x for x in eps if x.season == s_num and x.episode == e_num),
+                        None,
+                    )
+                    if not ep:
+                        ep = EpisodeItem(
+                            id=f"{imdb_id}:{s_num}:{e_num}",
+                            season=s_num,
+                            episode=e_num,
+                            title=item.get("episode_title") or f"Episode {e_num}",
+                        )
+
+            show_media_info(details, ep)
+
         choices = [(format_history_choice(i), i) for i in items]
 
         prompt_title = "Continue watching" if continue_watching else "Select from history"
-        selected = prompt_select(prompt_title, choices)
+        selected = prompt_select(prompt_title, choices, on_info=on_history_info)
         if not selected:
             return
 
@@ -555,7 +591,7 @@ def main(
             chosen_season = season_arg or select_season(episodes)
             if chosen_season is None:
                 return
-            target_episode = episode_arg or select_episode(episodes, chosen_season)
+            target_episode = episode_arg or select_episode(episodes, chosen_season, selected_media)
             if target_episode is None:
                 return
 
@@ -649,7 +685,7 @@ def _binge_loop(
                 console.clear()
                 if not chosen_season:
                     break
-                ep = select_episode(all_episodes, chosen_season)
+                ep = select_episode(all_episodes, chosen_season, media)
                 console.clear()
                 if not ep:
                     break
@@ -671,7 +707,7 @@ def _binge_loop(
                 console.clear()
                 if not chosen_season:
                     break
-                ep = select_episode(all_episodes, chosen_season)
+                ep = select_episode(all_episodes, chosen_season, media)
                 console.clear()
                 if not ep:
                     break

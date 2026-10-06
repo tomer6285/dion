@@ -109,7 +109,7 @@ local function save_position(force_pos)
     local duration = mp.get_property_number("duration", 0.0)
     if force_pos == nil then
         if not pos or pos <= 0 then return end
-        if duration and duration > 60 and (pos >= duration - 30 or pos >= duration * 0.95) then
+        if duration and duration > 60 and (pos >= duration - 60 or pos >= duration * 0.95) then
             pos = 0.0
         elseif pos < 10 then
             return

@@ -396,6 +396,44 @@ def main(
             console.print("[yellow]No watch history found.[/yellow]")
             raise typer.Exit(0)
 
+        # Advance any completed series episodes to the next episode
+        for item in items:
+            if item.get("media_type") == MediaType.SERIES.value:
+                imdb_id = item.get("imdb_id")
+                s = item.get("season")
+                e = item.get("episode")
+                if s is not None and e is not None and imdb_id:
+                    if history_mgr.is_episode_completed(imdb_id, s, e):
+                        try:
+                            all_eps = metadata_client.get_episodes(imdb_id)
+                            curr_idx = next(
+                                (
+                                    i
+                                    for i, ep_item in enumerate(all_eps)
+                                    if ep_item.season == s and ep_item.episode == e
+                                ),
+                                -1,
+                            )
+                            if curr_idx != -1 and curr_idx + 1 < len(all_eps):
+                                next_ep = all_eps[curr_idx + 1]
+                                item["season"] = next_ep.season
+                                item["episode"] = next_ep.episode
+                                item["episode_title"] = next_ep.title
+                                item["position"] = 0.0
+                                history_mgr.record_watch(
+                                    media=MediaItem(
+                                        id=imdb_id,
+                                        imdb_id=imdb_id,
+                                        title=item.get("title", ""),
+                                        media_type=MediaType.SERIES,
+                                        year=item.get("year"),
+                                    ),
+                                    episode=next_ep,
+                                    playback_position=0.0,
+                                )
+                        except Exception:
+                            pass
+
         choices = [(format_history_choice(i), i) for i in items]
 
         prompt_title = "Continue watching" if continue_watching else "Select from history"
@@ -421,6 +459,20 @@ def main(
             )
             if not ep and all_episodes:
                 ep = all_episodes[0]
+
+            if ep and history_mgr.is_episode_completed(details.imdb_id, ep.season, ep.episode):
+                curr_idx = next(
+                    (
+                        i
+                        for i, item in enumerate(all_episodes)
+                        if item.id == ep.id
+                        or (item.season == ep.season and item.episode == ep.episode)
+                    ),
+                    -1,
+                )
+                if curr_idx != -1 and curr_idx + 1 < len(all_episodes):
+                    ep = all_episodes[curr_idx + 1]
+                    saved_pos = 0.0
 
             _binge_loop(
                 details,
@@ -563,6 +615,14 @@ def _binge_loop(
         )
         if current_idx != -1 and current_idx + 1 < len(all_episodes):
             next_ep = all_episodes[current_idx + 1]
+            history_mgr = get_history_mgr()
+            if ep and history_mgr.is_episode_completed(media.imdb_id, ep.season, ep.episode):
+                history_mgr.record_watch(
+                    media=media,
+                    episode=next_ep,
+                    playback_position=0.0,
+                )
+
             choices = [
                 (f"▶ Watch next episode ({next_ep.display_name})", next_ep),
                 (f"↺ Replay current episode ({ep.display_name})", "replay"),
@@ -578,6 +638,11 @@ def _binge_loop(
                 active_start_time = None
             elif action == "replay":
                 active_start_time = 0.0
+                history_mgr.record_watch(
+                    media=media,
+                    episode=ep,
+                    playback_position=0.0,
+                )
             elif action == "select_episode":
                 # Re-select episode
                 chosen_season = select_season(all_episodes)

@@ -109,6 +109,19 @@ class HistoryManager:
                     return float(item.get("position", 0.0))
         return 0.0
 
+    def is_episode_completed(
+        self,
+        imdb_id: str,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+    ) -> bool:
+        """Check if an episode has completed playback (saved position is 0.0 in positions file)."""
+        positions = self._load_positions()
+        if season is not None and episode is not None:
+            key = f"{imdb_id}:{season}:{episode}"
+            return positions.get(key) == 0.0
+        return False
+
     def set_playback_position(
         self,
         imdb_id: str,

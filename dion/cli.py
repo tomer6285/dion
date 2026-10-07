@@ -426,6 +426,7 @@ def main(
 
     # 1. Handle continue watching & history selection
     if continue_watching or show_history:
+        console.clear()
         items = history_mgr.list_history()
         if not items:
             console.print("[yellow]No watch history found.[/yellow]")
@@ -518,6 +519,7 @@ def main(
 
         prompt_title = "Continue watching" if continue_watching else "Select from history"
         selected = prompt_select(prompt_title, choices, on_info=on_history_info)
+        console.clear()
         if not selected:
             return
 

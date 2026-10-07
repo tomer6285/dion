@@ -122,6 +122,7 @@ def play_or_download(
 
     pm = get_provider_manager()
     history_mgr = get_history_mgr()
+    settings_mgr = get_settings_mgr()
 
     # Determine resume start time if streaming and not explicitly specified
     if start_time is None and not download:
@@ -178,13 +179,24 @@ def play_or_download(
                 time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins:02d}:{secs:02d}"
                 console.print(f"[bold green]▶ Resuming playback at {time_str}...[/bold green]")
 
-            exit_code = get_player().play(
-                source=source,
-                media=media,
-                episode=episode,
-                start_time=start_time,
-                sub_delay=sub_delay,
-            )
+            rpc = None
+            if settings_mgr.discord_rpc:
+                from .discord import DiscordRPC
+                rpc = DiscordRPC(client_id=settings_mgr.discord_client_id)
+                rpc.start_playback(media=media, episode=episode, start_time=start_time)
+
+            try:
+                exit_code = get_player().play(
+                    source=source,
+                    media=media,
+                    episode=episode,
+                    start_time=start_time,
+                    sub_delay=sub_delay,
+                )
+            finally:
+                if rpc:
+                    rpc.stop()
+
             # Exit codes 0 (normal finish/quit), 4 (signal/VO quit), -2 (SIGINT), -15 (SIGTERM)
             # all indicate normal user quit or playback completion.
             if exit_code in (0, 4, -2, -15):
@@ -223,6 +235,9 @@ def interactive_settings_menu() -> None:
         server_desc = "Enabled (Auto-select first server)" if settings_mgr.auto_select_server else "Disabled (Prompt each time)"
         lang_desc = settings_mgr.sub_lang.upper()
         dl_desc = str(settings_mgr.download_dir)
+        rpc_status = "Enabled" if settings_mgr.discord_rpc else "Disabled"
+        custom_id_tag = f" [ID: {settings_mgr.discord_client_id}]" if settings_mgr.discord_client_id else ""
+        rpc_desc = f"{rpc_status}{custom_id_tag}"
 
         console.print(
             Panel(
@@ -239,6 +254,7 @@ def interactive_settings_menu() -> None:
             (f"🌐 Preferred Subtitle Language: {lang_desc}", "sub_lang"),
             (f"⚡ Auto-select server: {server_desc}", "auto_server"),
             (f"📂 Default Download Directory: {dl_desc}", "download_dir"),
+            (f"🎮 Discord Rich Presence (RPC): {rpc_desc}", "discord_rpc"),
             ("↺ Reset all settings to defaults", "reset"),
             ("↩ Save & Exit", "exit"),
         ]
@@ -324,6 +340,25 @@ def interactive_settings_menu() -> None:
                 p = Path(new_dir).expanduser()
                 p.mkdir(parents=True, exist_ok=True)
                 settings_mgr.set("download_dir", str(p))
+
+        elif action == "discord_rpc":
+            console.clear()
+            rpc_choices = [
+                ("✅ Enabled (Show status on Discord during playback)", "enable"),
+                ("❌ Disabled (Turn off Discord Rich Presence)", "disable"),
+                ("🔑 Configure custom Discord Application Client ID...", "set_client_id"),
+                ("↩ Cancel", "cancel"),
+            ]
+            chosen_rpc = prompt_select("Discord Rich Presence Settings", rpc_choices)
+            if chosen_rpc == "enable":
+                settings_mgr.set("discord_rpc", True)
+            elif chosen_rpc == "disable":
+                settings_mgr.set("discord_rpc", False)
+            elif chosen_rpc == "set_client_id":
+                current = settings_mgr.discord_client_id
+                console.print(f"[dim]Current Client ID: {current or '(using default)'}[/dim]")
+                new_id = typer.prompt("Enter Discord Application Client ID (leave blank for default)", default=current).strip()
+                settings_mgr.set("discord_client_id", new_id)
 
         elif action == "reset":
             console.clear()

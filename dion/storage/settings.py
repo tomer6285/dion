@@ -12,6 +12,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "sub_lang": "en",  # preferred subtitle language
     "auto_select_server": False,  # whether to auto-pick best server without prompt
     "download_dir": str(Path.home() / "Downloads"),
+    "discord_rpc": True,  # whether Discord Rich Presence is enabled
+    "discord_client_id": "",  # custom Discord Application Client ID (optional override)
 }
 
 
@@ -82,6 +84,14 @@ class SettingsManager:
     def download_dir(self) -> Path:
         raw = self.get("download_dir", str(Path.home() / "Downloads"))
         return Path(raw).expanduser().resolve()
+
+    @property
+    def discord_rpc(self) -> bool:
+        return bool(self.get("discord_rpc", True))
+
+    @property
+    def discord_client_id(self) -> str:
+        return str(self.get("discord_client_id", "")).strip()
 
     def resolve_player_executable(self) -> Optional[str]:
         """Resolves the executable path according to configured player preference."""

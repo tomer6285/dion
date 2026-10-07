@@ -455,6 +455,11 @@ def main(
                                 item["episode"] = next_ep.episode
                                 item["episode_title"] = next_ep.title
                                 item["position"] = 0.0
+                                if next_ep.runtime:
+                                    from .storage.history import parse_runtime
+                                    ep_dur = parse_runtime(next_ep.runtime)
+                                    if ep_dur:
+                                        item["duration"] = ep_dur
                                 history_mgr.record_watch(
                                     media=MediaItem(
                                         id=imdb_id,
@@ -465,9 +470,13 @@ def main(
                                     ),
                                     episode=next_ep,
                                     playback_position=0.0,
+                                    duration=item.get("duration"),
                                 )
                         except Exception:
                             pass
+
+        # Populate missing duration data for history items
+        history_mgr.populate_missing_durations(items, metadata_client)
 
         def on_history_info(item: Dict[str, Any]) -> None:
             imdb_id = item.get("imdb_id")

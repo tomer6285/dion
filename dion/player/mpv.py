@@ -56,6 +56,7 @@ local episode = mp.get_opt("dion_episode", "")
 
 local delays_file = (config_dir ~= "") and (config_dir .. "/sub_delays.json") or nil
 local pos_file = (config_dir ~= "") and (config_dir .. "/playback_positions.json") or nil
+local dur_file = (config_dir ~= "") and (config_dir .. "/playback_durations.json") or nil
 
 local pos_key = imdb_id
 if season ~= "" and episode ~= "" then
@@ -103,10 +104,41 @@ local function save_delay(delay)
     end
 end
 
+local function save_duration(dur)
+    if not dur_file or pos_key == "" or not dur or dur <= 0 then return end
+    local data = {}
+    local f = io.open(dur_file, "r")
+    if f then
+        local content = f:read("*all")
+        f:close()
+        if content then
+            for k, v in content:gmatch('"([^"]+)"%s*:%s*([%-0-9%.]+)') do
+                data[k] = tonumber(v)
+            end
+        end
+    end
+    data[pos_key] = math.floor(dur * 10 + 0.5) / 10
+    local out = io.open(dur_file, "w")
+    if out then
+        out:write("{\\n")
+        local first = true
+        for k, v in pairs(data) do
+            if not first then out:write(",\\n") end
+            first = false
+            out:write(string.format('  "%s": %.1f', k, v))
+        end
+        out:write("\\n}\\n")
+        out:close()
+    end
+end
+
 local function save_position(force_pos)
     if not pos_file or pos_key == "" then return end
     local pos = force_pos or mp.get_property_number("time-pos", 0.0)
     local duration = mp.get_property_number("duration", 0.0)
+    if duration and duration > 0 then
+        save_duration(duration)
+    end
     if force_pos == nil then
         if not pos or pos <= 0 then return end
         if duration and duration > 60 and (pos >= duration - 60 or pos >= duration * 0.95) then
@@ -246,6 +278,13 @@ mp.register_event("file-loaded", function()
             mp.osd_message(string.format("💬 Subtitle: %s%s\\n• Adjust: z/x (±0.1s)  Z/X (±0.5s)  j (cycle)", title, delay_info), 4.0)
         end
     end)
+end)
+
+-- Observe duration property: save duration as soon as player demuxes stream length
+mp.observe_property("duration", "number", function(name, dur)
+    if dur and dur > 0 then
+        save_duration(dur)
+    end
 end)
 
 -- Periodic position persistence (every 5 seconds while playing)

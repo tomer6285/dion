@@ -36,6 +36,7 @@ class CinemetaClient:
                                 year=item.get("releaseInfo"),
                                 overview=item.get("description"),
                                 poster=item.get("poster"),
+                                runtime=item.get("runtime"),
                             )
                         )
             except Exception:
@@ -56,6 +57,7 @@ class CinemetaClient:
                                 year=item.get("releaseInfo"),
                                 overview=item.get("description"),
                                 poster=item.get("poster"),
+                                runtime=item.get("runtime"),
                             )
                         )
             except Exception:
@@ -82,6 +84,7 @@ class CinemetaClient:
                 return episodes
 
             data = resp.json().get("meta", {})
+            series_runtime = data.get("runtime")
             raw_videos = data.get("videos", [])
 
             for v in raw_videos:
@@ -96,6 +99,7 @@ class CinemetaClient:
                         title=v.get("name") or v.get("title") or f"Episode {ep_num}",
                         overview=v.get("overview") or v.get("description"),
                         released=v.get("released") or v.get("firstAired"),
+                        runtime=v.get("runtime") or series_runtime,
                     )
                 )
 
@@ -121,5 +125,6 @@ class CinemetaClient:
                 overview=meta.get("description"),
                 poster=meta.get("poster"),
                 rating=meta.get("imdbRating"),
+                runtime=meta.get("runtime"),
             )
 

@@ -210,6 +210,37 @@ def format_relative_time(iso_str: Optional[str]) -> str:
         return iso_str[:10]
 
 
+def format_playback_progress(position: float, duration: Optional[float] = None) -> str:
+    """Format playback position and duration into progress string, e.g. '15:35 / 43:00 (36%)'."""
+    pos = max(0.0, float(position or 0.0))
+    if duration and duration > 0:
+        dur = float(duration)
+        force_hours = dur >= 3600 or pos >= 3600
+
+        def _fmt(s: float) -> str:
+            total_s = max(0, int(round(s)))
+            hrs = total_s // 3600
+            mins = (total_s % 3600) // 60
+            secs = total_s % 60
+            if hrs > 0 or force_hours:
+                return f"{hrs:02d}:{mins:02d}:{secs:02d}"
+            return f"{mins:02d}:{secs:02d}"
+
+        pos_str = _fmt(pos)
+        dur_str = _fmt(dur)
+        pct = min(100, max(0, int(round((pos / dur) * 100))))
+        return f"{pos_str} / {dur_str} ({pct}%)"
+    elif pos > 10:
+        total_secs = int(pos)
+        hrs = total_secs // 3600
+        mins = (total_secs % 3600) // 60
+        secs = total_secs % 60
+        pos_str = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins:02d}:{secs:02d}"
+        return f"at {pos_str}"
+    else:
+        return "Not started"
+
+
 def format_history_choice(item: Dict[str, Any], ansi: bool = True) -> str:
     """Format a watch history item into an aesthetic, informative menu entry."""
     is_series = item.get("media_type") == "series" or ("season" in item and "episode" in item)
@@ -241,17 +272,20 @@ def format_history_choice(item: Dict[str, Any], ansi: bool = True) -> str:
             ep_str = f"\033[36m{ep_str}\033[0m"
         parts.append(ep_str)
 
-    # Playback resume position if available
-    pos = item.get("position", 0.0)
-    if isinstance(pos, (int, float)) and pos > 10:
-        total_secs = int(pos)
-        hrs = total_secs // 3600
-        mins = (total_secs % 3600) // 60
-        secs = total_secs % 60
-        pos_str = f"at {hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"at {mins:02d}:{secs:02d}"
+    # Playback resume position and progress
+    pos = float(item.get("position", 0.0) or 0.0)
+    dur = item.get("duration")
+    if dur is not None:
+        try:
+            dur = float(dur)
+        except (ValueError, TypeError):
+            dur = None
+
+    prog_str = format_playback_progress(pos, dur)
+    if prog_str:
         if ansi:
-            pos_str = f"\033[33m{pos_str}\033[0m"
-        parts.append(pos_str)
+            prog_str = f"\033[33m{prog_str}\033[0m"
+        parts.append(prog_str)
 
     # Relative time
     rel_time = format_relative_time(item.get("last_watched"))

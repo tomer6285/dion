@@ -20,6 +20,7 @@ class MediaItem:
     overview: Optional[str] = None
     poster: Optional[str] = None
     rating: Optional[str] = None
+    runtime: Optional[str] = None
 
     @property
     def display_title(self) -> str:
@@ -39,6 +40,7 @@ class EpisodeItem:
     title: str
     overview: Optional[str] = None
     released: Optional[str] = None
+    runtime: Optional[str] = None
 
     @property
     def display_name(self) -> str:

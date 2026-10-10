@@ -13,6 +13,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "sub_lang": "en",  # preferred subtitle language
     "auto_select_server": False,  # whether to auto-pick best server without prompt
     "download_dir": str(Path.home() / "Downloads"),
+    "download_format": "mp4",  # mp4 or mkv
+    "download_concurrent": 2,  # concurrent batch downloads
     "discord_rpc": True,  # whether Discord Rich Presence is enabled
     "discord_client_id": "",  # custom Discord Application Client ID (optional override)
     "wyzie_api_key": "",  # Wyzie Subs API key (optional)
@@ -87,6 +89,18 @@ class SettingsManager:
     def download_dir(self) -> Path:
         raw = self.get("download_dir", str(Path.home() / "Downloads"))
         return Path(raw).expanduser().resolve()
+
+    @property
+    def download_format(self) -> str:
+        fmt = str(self.get("download_format", "mp4")).strip().lower().lstrip(".")
+        return fmt if fmt in ("mp4", "mkv") else "mp4"
+
+    @property
+    def download_concurrent(self) -> int:
+        try:
+            return max(1, int(self.get("download_concurrent", 2)))
+        except (ValueError, TypeError):
+            return 2
 
     @property
     def discord_rpc(self) -> bool:

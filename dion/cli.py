@@ -113,6 +113,8 @@ def play_or_download(
     episode: Optional[EpisodeItem] = None,
     download: bool = False,
     output_dir: Optional[Path] = None,
+    video_format: str = "mp4",
+    overwrite: bool = False,
     auto_select: bool = False,
     sub_delay: Optional[float] = None,
     start_time: Optional[float] = None,
@@ -169,6 +171,9 @@ def play_or_download(
                 media=media,
                 episode=episode,
                 output_dir=output_dir,
+                video_format=video_format,
+                overwrite=overwrite,
+                provider_manager=pm,
             )
             return status == 0
         else:
@@ -231,6 +236,71 @@ def play_or_download(
     return False
 
 
+def download_season_batch(
+    media: MediaItem,
+    episodes: list[EpisodeItem],
+    output_dir: Optional[Path] = None,
+    video_format: str = "mp4",
+    max_concurrent: int = 2,
+    overwrite: bool = False,
+) -> bool:
+    """Download multiple episodes concurrently with progress dashboard and summary."""
+    from .player.downloader import DownloadTask
+
+    if not episodes:
+        console.print("[yellow]No episodes to download.[/yellow]")
+        return False
+
+    season_num = episodes[0].season
+    settings_mgr = get_settings_mgr()
+    if output_dir is None:
+        output_dir = settings_mgr.download_dir
+
+    show_media_info(media, episodes[0])
+    console.print(
+        Panel(
+            f"[bold cyan]📦 Batch TV Download:[/bold cyan] {media.title} — Season {season_num}\n"
+            f"[dim]• Episodes to download:[/dim] [bold white]{len(episodes)}[/bold white] (E{episodes[0].episode:02d} - E{episodes[-1].episode:02d})\n"
+            f"[dim]• Container format:[/dim] [yellow]{video_format.upper()}[/yellow]\n"
+            f"[dim]• Concurrent downloads:[/dim] [green]{max_concurrent}[/green]\n"
+            f"[dim]• Save directory:[/dim] [blue]{output_dir}[/blue]",
+            title="[bold purple] Dion Downloader [/bold purple]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+    tasks = [DownloadTask(media=media, episode=ep) for ep in episodes]
+    pm = get_provider_manager()
+    downloader = get_downloader()
+
+    res = downloader.download_batch(
+        tasks=tasks,
+        output_dir=output_dir,
+        video_format=video_format,
+        max_concurrent=max_concurrent,
+        overwrite=overwrite,
+        provider_manager=pm,
+    )
+
+    # Print summary card
+    summary_text = (
+        f"[bold green]✓ Downloaded:[/bold green] {res.completed}/{res.total}\n"
+        f"[dim]• Skipped (Already existed):[/dim] {res.skipped}\n"
+        f"[dim]• Failed:[/dim] {res.failed}\n"
+        f"[bold cyan]📁 Destination:[/bold cyan] {res.output_dir}"
+    )
+    console.print(
+        Panel(
+            summary_text,
+            title="[bold green] 📦 Batch Download Finished [/bold green]",
+            border_style="green" if res.failed == 0 else "yellow",
+            expand=False,
+        )
+    )
+    return res.completed > 0 or res.skipped > 0
+
+
 def interactive_settings_menu() -> None:
     settings_mgr = get_settings_mgr()
     while True:
@@ -250,6 +320,8 @@ def interactive_settings_menu() -> None:
         server_desc = "Enabled (Auto-select first server)" if settings_mgr.auto_select_server else "Disabled (Prompt each time)"
         lang_desc = settings_mgr.sub_lang.upper()
         dl_desc = str(settings_mgr.download_dir)
+        fmt_desc = settings_mgr.download_format.upper()
+        conc_desc = str(settings_mgr.download_concurrent)
         rpc_status = "Enabled" if settings_mgr.discord_rpc else "Disabled"
         custom_id_tag = f" [ID: {settings_mgr.discord_client_id}]" if settings_mgr.discord_client_id else ""
         rpc_desc = f"{rpc_status}{custom_id_tag}"
@@ -269,6 +341,8 @@ def interactive_settings_menu() -> None:
             (f"🌐 Preferred Subtitle Language: {lang_desc}", "sub_lang"),
             (f"⚡ Auto-select server: {server_desc}", "auto_server"),
             (f"📂 Default Download Directory: {dl_desc}", "download_dir"),
+            (f"📦 Download Container Format: {fmt_desc}", "download_format"),
+            (f"🔄 Batch Download Concurrency: {conc_desc}", "download_concurrent"),
             (f"🎮 Discord Rich Presence (RPC): {rpc_desc}", "discord_rpc"),
             ("↺ Reset all settings to defaults", "reset"),
             ("↩ Save & Exit", "exit"),
@@ -356,6 +430,30 @@ def interactive_settings_menu() -> None:
                 p.mkdir(parents=True, exist_ok=True)
                 settings_mgr.set("download_dir", str(p))
 
+        elif action == "download_format":
+            console.clear()
+            fmt_choices = [
+                ("MP4 (Universal compatibility)", "mp4"),
+                ("MKV", "mkv"),
+                ("↩ Cancel", "cancel"),
+            ]
+            chosen_fmt = prompt_select("Select Default Download Container Format", fmt_choices)
+            if chosen_fmt and chosen_fmt != "cancel":
+                settings_mgr.set("download_format", chosen_fmt)
+
+        elif action == "download_concurrent":
+            console.clear()
+            c_choices = [
+                ("1 episode at a time (Sequential)", 1),
+                ("2 episodes simultaneously (Recommended)", 2),
+                ("3 episodes simultaneously (Fast connection)", 3),
+                ("4 episodes simultaneously", 4),
+                ("↩ Cancel", "cancel"),
+            ]
+            chosen_c = prompt_select("Concurrent Download Workers", c_choices)
+            if isinstance(chosen_c, int):
+                settings_mgr.set("download_concurrent", chosen_c)
+
         elif action == "discord_rpc":
             console.clear()
             rpc_choices = [
@@ -390,6 +488,21 @@ def main(
     ),
     download: bool = typer.Option(
         False, "-d", "--download", help="Download the media instead of streaming."
+    ),
+    all_episodes: bool = typer.Option(
+        False, "-a", "--all", help="Download all episodes for the season (batch mode)."
+    ),
+    episode_range: Optional[str] = typer.Option(
+        None, "--range", help="Download a range of episodes (e.g. '1-4', '1,2,5', '3-')."
+    ),
+    video_format: Optional[str] = typer.Option(
+        None, "-f", "--format", help="Output container format ('mp4' or 'mkv')."
+    ),
+    concurrent: Optional[int] = typer.Option(
+        None, "-C", "--concurrent", help="Number of concurrent downloads in batch mode."
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", "--force", help="Overwrite existing downloaded files."
     ),
     continue_watching: bool = typer.Option(
         False, "-c", "--continue", help="Continue watching the last title."
@@ -429,8 +542,15 @@ def main(
     history_mgr = get_history_mgr()
     settings_mgr = get_settings_mgr()
 
+    if all_episodes or episode_range:
+        download = True
+
     if output_dir is None:
         output_dir = settings_mgr.download_dir
+    if video_format is None:
+        video_format = settings_mgr.download_format
+    if concurrent is None:
+        concurrent = settings_mgr.download_concurrent
     best = best or settings_mgr.auto_select_server
 
     # 1. Handle delete history
@@ -578,6 +698,8 @@ def main(
                 download,
                 output_dir,
                 best,
+                video_format=video_format,
+                overwrite=overwrite,
                 sub_delay=sub_delay,
                 start_time=saved_pos,
             )
@@ -588,7 +710,9 @@ def main(
                 None,
                 download,
                 output_dir,
-                best,
+                video_format=video_format,
+                overwrite=overwrite,
+                auto_select=best,
                 sub_delay=sub_delay,
                 start_time=saved_pos,
             )
@@ -621,6 +745,8 @@ def main(
             episode=None,
             download=download,
             output_dir=output_dir,
+            video_format=video_format,
+            overwrite=overwrite,
             auto_select=best,
             sub_delay=sub_delay,
         )
@@ -633,26 +759,122 @@ def main(
             console.print("[bold red]Could not find episode data for this series.[/bold red]")
             raise typer.Exit(1)
 
-        # Check if season/episode flags were passed
-        if season_arg is not None and episode_arg is not None:
+        # Determine target season
+        chosen_season = season_arg
+        if chosen_season is None:
+            chosen_season = select_season(episodes)
+            if chosen_season is None:
+                return
+
+        season_episodes = [ep for ep in episodes if ep.season == chosen_season]
+        if not season_episodes:
+            console.print(f"[bold red]No episodes found for Season {chosen_season}.[/bold red]")
+            raise typer.Exit(1)
+
+        available_ep_nums = [ep.episode for ep in season_episodes]
+
+        # DOWNLOAD MODE ROUTING
+        if download:
+            from .player.downloader import parse_episode_range
+
+            target_batch: Optional[list[EpisodeItem]] = None
+
+            if episode_arg is not None and not all_episodes and not episode_range:
+                # Single episode download via -e
+                target_episode = next(
+                    (ep for ep in season_episodes if ep.episode == episode_arg),
+                    None,
+                )
+                if not target_episode:
+                    console.print(
+                        f"[bold red]Episode S{chosen_season:02d}E{episode_arg:02d} not found.[/bold red]"
+                    )
+                    raise typer.Exit(1)
+                play_or_download(
+                    media=selected_media,
+                    episode=target_episode,
+                    download=True,
+                    output_dir=output_dir,
+                    video_format=video_format,
+                    overwrite=overwrite,
+                    auto_select=best,
+                    sub_delay=sub_delay,
+                )
+                return
+
+            elif all_episodes:
+                target_batch = season_episodes
+
+            elif episode_range:
+                matched_nums = parse_episode_range(episode_range, available_ep_nums)
+                if not matched_nums:
+                    console.print(
+                        f"[bold red]No episodes in Season {chosen_season} match range '{episode_range}'. Available: 1-{len(season_episodes)}[/bold red]"
+                    )
+                    raise typer.Exit(1)
+                target_batch = [ep for ep in season_episodes if ep.episode in matched_nums]
+
+            else:
+                # Interactive episode/batch selection
+                dl_choices: list[tuple[str, Any]] = [
+                    (f"📥 Download Entire Season {chosen_season} ({len(season_episodes)} episodes)", "all"),
+                    ("📥 Download Episode Range (e.g. 1-4)...", "range"),
+                ]
+                for ep in season_episodes:
+                    label = f"E{ep.episode:02d}: {ep.title}"
+                    if ep.released:
+                        label += f" ({ep.released[:10]})"
+                    dl_choices.append((label, ep))
+
+                action = prompt_select(f"Download Season {chosen_season}", dl_choices)
+                if not action:
+                    return
+                if action == "all":
+                    target_batch = season_episodes
+                elif action == "range":
+                    r_str = typer.prompt("Enter episode range (e.g. 1-4, 1,3,5)").strip()
+                    matched_nums = parse_episode_range(r_str, available_ep_nums)
+                    if not matched_nums:
+                        console.print(f"[bold red]No episodes match range '{r_str}'.[/bold red]")
+                        return
+                    target_batch = [ep for ep in season_episodes if ep.episode in matched_nums]
+                elif isinstance(action, EpisodeItem):
+                    play_or_download(
+                        media=selected_media,
+                        episode=action,
+                        download=True,
+                        output_dir=output_dir,
+                        video_format=video_format,
+                        overwrite=overwrite,
+                        auto_select=best,
+                        sub_delay=sub_delay,
+                    )
+                    return
+
+            if target_batch:
+                download_season_batch(
+                    media=selected_media,
+                    episodes=target_batch,
+                    output_dir=output_dir,
+                    video_format=video_format,
+                    max_concurrent=concurrent,
+                    overwrite=overwrite,
+                )
+                return
+
+        # STREAMING PLAYBACK MODE
+        if episode_arg is not None:
             target_episode = next(
-                (
-                    ep
-                    for ep in episodes
-                    if ep.season == season_arg and ep.episode == episode_arg
-                ),
+                (ep for ep in season_episodes if ep.episode == episode_arg),
                 None,
             )
             if not target_episode:
                 console.print(
-                    f"[bold red]Episode S{season_arg:02d}E{episode_arg:02d} not found.[/bold red]"
+                    f"[bold red]Episode S{chosen_season:02d}E{episode_arg:02d} not found.[/bold red]"
                 )
                 raise typer.Exit(1)
         else:
-            chosen_season = season_arg or select_season(episodes)
-            if chosen_season is None:
-                return
-            target_episode = episode_arg or select_episode(episodes, chosen_season, selected_media)
+            target_episode = select_episode(episodes, chosen_season, selected_media)
             if target_episode is None:
                 return
 
@@ -663,6 +885,8 @@ def main(
             download,
             output_dir,
             best,
+            video_format=video_format,
+            overwrite=overwrite,
             sub_delay=sub_delay,
         )
 
@@ -674,6 +898,8 @@ def _binge_loop(
     download: bool,
     output_dir: Optional[Path],
     best: bool,
+    video_format: str = "mp4",
+    overwrite: bool = False,
     sub_delay: Optional[float] = None,
     start_time: Optional[float] = None,
 ) -> None:
@@ -687,6 +913,8 @@ def _binge_loop(
             episode=ep,
             download=download,
             output_dir=output_dir,
+            video_format=video_format,
+            overwrite=overwrite,
             auto_select=best,
             sub_delay=active_sub_delay,
             start_time=active_start_time,

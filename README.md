@@ -203,7 +203,7 @@ From here you can:
 - Reset all configurations to factory defaults.
 
 ### Download Mode
-Save media files locally for offline viewing:
+Save media files locally for offline viewing with soft-embedded subtitles, container metadata, and cover art:
 ```bash
 # Download a movie (saved to ~/Downloads or your configured directory)
 dion "Interstellar" -d
@@ -211,9 +211,26 @@ dion "Interstellar" -d
 # Download a specific TV episode
 dion "The Bear" -s 1 -e 1 -d
 
+# Download an ENTIRE season in a single command
+dion "Severance" -s 1 -d --all
+
+# Download a specific episode range
+dion "Severance" -s 1 -d --range 1-4
+
+# Choose container format (MP4 with mov_text or MKV with SRT)
+dion "Severance" -s 1 -d --all -f mkv
+
+# Set concurrent episode download workers (default: 2)
+dion "Severance" -s 1 -d --all -C 3
+
 # Specify a custom download folder
 dion "Blade Runner 2049" -d -o ~/Movies
 ```
+
+All downloaded files automatically include:
+- **Soft-Muxed Subtitles:** Selectable `.srt`/`.vtt` subtitle tracks embedded directly in the container without re-encoding video.
+- **Rich Progress Dashboard:** Multi-task concurrent progress bars showing download speeds (MB/s), percentages, and ETAs.
+- **Metadata Tags & Cover Art:** Apple TV / Jellyfin / Plex compatible tags (title, season, episode, year, overview, and poster artwork).
 
 ### Auto-Pick Best Server
 Skip the stream server selection menu and immediately start playback on the first working server:
@@ -248,6 +265,11 @@ Options:
   -S, --settings            Open settings menu to configure player, subtitles, and preferences.
   -s, --season <int>        Specific season number for TV shows.
   -e, --episode <int>       Specific episode number for TV shows.
+  -a, --all                 Download all episodes for the season (batch mode).
+      --range <str>         Download a range of episodes (e.g. '1-4', '1,2,5', '3-').
+  -f, --format <str>        Output container format ('mp4' or 'mkv', default: mp4).
+  -C, --concurrent <int>    Number of concurrent downloads in batch mode (default: 2).
+      --overwrite, --force  Overwrite existing downloaded files.
       --best                Automatically pick the first server without prompting.
   -d, --download            Download the media instead of streaming.
   -o, --output <path>       Output directory for downloads (default: ~/Downloads).

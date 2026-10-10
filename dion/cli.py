@@ -132,6 +132,15 @@ def play_or_download(
             episode=episode.episode if episode else None,
         )
 
+    # Kick off background async subtitle prefetching immediately
+    pm.subtitle_resolver.prefetch_subtitles(
+        imdb_id=media.imdb_id,
+        season=episode.season if episode else None,
+        episode=episode.episode if episode else None,
+        released=episode.released if episode else media.year,
+        preferred_langs=[settings_mgr.sub_lang, "en", "eng", "English"],
+    )
+
     with console.status("[bold cyan]Resolving streaming sources...[/bold cyan]"):
         if episode:
             sources = pm.resolve_episode(
@@ -169,7 +178,13 @@ def play_or_download(
                 playback_position=start_time or 0.0,
             )
             if sub_delay is not None:
-                history_mgr.set_sub_delay(media.imdb_id, sub_delay)
+                history_mgr.set_sub_delay(
+                    media.imdb_id,
+                    sub_delay,
+                    season=episode.season if episode else None,
+                    episode=episode.episode if episode else None,
+                    server=source.server if source else None,
+                )
 
             if start_time and start_time > 10:
                 total_s = int(start_time)

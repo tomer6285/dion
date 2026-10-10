@@ -382,32 +382,80 @@ class HistoryManager:
             except Exception:
                 pass
 
-    def get_sub_delay(self, imdb_id: str) -> float:
-        """Get saved subtitle delay in seconds for this title."""
+    def get_sub_delay(
+        self,
+        imdb_id: str,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        server: Optional[str] = None,
+    ) -> float:
+        """Get saved subtitle delay in seconds for this title, episode, and server with fallback."""
         delays_file = self.config_dir / "sub_delays.json"
         if not delays_file.exists():
             return 0.0
         try:
             with open(delays_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return float(data.get(imdb_id, 0.0))
+                if not isinstance(data, dict):
+                    return 0.0
+
+                clean_server = server.strip().lower() if server else ""
+                candidates: List[str] = []
+                if season is not None and episode is not None and clean_server:
+                    candidates.append(f"{imdb_id}:{season}:{episode}:{clean_server}")
+                if clean_server:
+                    candidates.append(f"{imdb_id}:{clean_server}")
+                if season is not None and episode is not None:
+                    candidates.append(f"{imdb_id}:{season}:{episode}")
+                candidates.append(imdb_id)
+
+                for k in candidates:
+                    if k in data:
+                        return float(data[k])
+                return 0.0
         except Exception:
             return 0.0
 
-    def set_sub_delay(self, imdb_id: str, delay: float) -> None:
-        """Persist subtitle delay for this title across playback sessions."""
+    def set_sub_delay(
+        self,
+        imdb_id: str,
+        delay: float,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        server: Optional[str] = None,
+    ) -> None:
+        """Persist subtitle delay for this title, episode, and server across playback sessions."""
         delays_file = self.config_dir / "sub_delays.json"
         data: Dict[str, float] = {}
         if delays_file.exists():
             try:
                 with open(delays_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
             except Exception:
                 data = {}
-        data[imdb_id] = round(delay, 2)
+
+        clean_server = server.strip().lower() if server else ""
+        if season is not None and episode is not None and clean_server:
+            key = f"{imdb_id}:{season}:{episode}:{clean_server}"
+        elif clean_server:
+            key = f"{imdb_id}:{clean_server}"
+        elif season is not None and episode is not None:
+            key = f"{imdb_id}:{season}:{episode}"
+        else:
+            key = imdb_id
+
+        data[key] = round(delay, 2)
         try:
-            with open(delays_file, "w", encoding="utf-8") as f:
+            temp_file = delays_file.with_suffix(".tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            temp_file.replace(delays_file)
         except Exception:
-            pass
+            try:
+                with open(delays_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            except Exception:
+                pass
 

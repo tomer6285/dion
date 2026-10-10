@@ -27,6 +27,9 @@ class ProviderManager:
         self, imdb_id: str, title: str, year: Optional[str] = None
     ) -> List[StreamSource]:
         """Resolve all working stream sources for a movie."""
+        # Initiate parallel background subtitle prefetching immediately
+        self.subtitle_resolver.prefetch_subtitles(imdb_id=imdb_id, released=year)
+
         sources: List[StreamSource] = []
 
         for provider in self.providers:
@@ -53,6 +56,11 @@ class ProviderManager:
         released: Optional[str] = None,
     ) -> List[StreamSource]:
         """Resolve all working stream sources for a TV series episode."""
+        # Initiate parallel background subtitle prefetching immediately
+        self.subtitle_resolver.prefetch_subtitles(
+            imdb_id=imdb_id, season=season, episode=episode, released=released
+        )
+
         sources: List[StreamSource] = []
 
         for provider in self.providers:

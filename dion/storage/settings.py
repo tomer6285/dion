@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "download_dir": str(Path.home() / "Downloads"),
     "discord_rpc": True,  # whether Discord Rich Presence is enabled
     "discord_client_id": "",  # custom Discord Application Client ID (optional override)
+    "wyzie_api_key": "",  # Wyzie Subs API key (optional)
+    "subdl_api_key": "",  # SubDL API key (optional)
 }
 
 
@@ -92,6 +95,16 @@ class SettingsManager:
     @property
     def discord_client_id(self) -> str:
         return str(self.get("discord_client_id", "")).strip()
+
+    @property
+    def wyzie_api_key(self) -> str:
+        val = str(self.get("wyzie_api_key", "")).strip()
+        return val or os.getenv("WYZIE_API_KEY", "").strip()
+
+    @property
+    def subdl_api_key(self) -> str:
+        val = str(self.get("subdl_api_key", "")).strip()
+        return val or os.getenv("SUBDL_API_KEY", "").strip()
 
     def resolve_player_executable(self) -> Optional[str]:
         """Resolves the executable path according to configured player preference."""

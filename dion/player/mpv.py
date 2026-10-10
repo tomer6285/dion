@@ -53,6 +53,7 @@ if config_dir == "" then
 end
 local season = mp.get_opt("dion_season", "")
 local episode = mp.get_opt("dion_episode", "")
+local server = mp.get_opt("dion_server", ""):lower()
 
 local delays_file = (config_dir ~= "") and (config_dir .. "/sub_delays.json") or nil
 local pos_file = (config_dir ~= "") and (config_dir .. "/playback_positions.json") or nil
@@ -63,6 +64,15 @@ if season ~= "" and episode ~= "" then
     pos_key = imdb_id .. ":" .. season .. ":" .. episode
 end
 
+local delay_key = imdb_id
+if season ~= "" and episode ~= "" and server ~= "" then
+    delay_key = imdb_id .. ":" .. season .. ":" .. episode .. ":" .. server
+elseif server ~= "" then
+    delay_key = imdb_id .. ":" .. server
+elseif season ~= "" and episode ~= "" then
+    delay_key = imdb_id .. ":" .. season .. ":" .. episode
+end
+
 local function load_saved_delay()
     if not delays_file or imdb_id == "" then return 0.0 end
     local f = io.open(delays_file, "r")
@@ -70,10 +80,25 @@ local function load_saved_delay()
     local content = f:read("*all")
     f:close()
     if not content or content == "" then return 0.0 end
-    local pattern = '"' .. imdb_id .. '"%s*:%s*([%-0-9%.]+)'
-    local val = content:match(pattern)
-    if val then
-        return tonumber(val) or 0.0
+    local data = {}
+    for k, v in content:gmatch('"([^"]+)"%s*:%s*([%-0-9%.]+)') do
+        data[k] = tonumber(v)
+    end
+    local candidates = {}
+    if season ~= "" and episode ~= "" and server ~= "" then
+        table.insert(candidates, imdb_id .. ":" .. season .. ":" .. episode .. ":" .. server)
+    end
+    if server ~= "" then
+        table.insert(candidates, imdb_id .. ":" .. server)
+    end
+    if season ~= "" and episode ~= "" then
+        table.insert(candidates, imdb_id .. ":" .. season .. ":" .. episode)
+    end
+    table.insert(candidates, imdb_id)
+    for _, k in ipairs(candidates) do
+        if data[k] ~= nil then
+            return data[k]
+        end
     end
     return 0.0
 end
@@ -85,11 +110,13 @@ local function save_delay(delay)
     if f then
         local content = f:read("*all")
         f:close()
-        for k, v in content:gmatch('"([%w_]+)"%s*:%s*([%-0-9%.]+)') do
-            data[k] = tonumber(v)
+        if content then
+            for k, v in content:gmatch('"([^"]+)"%s*:%s*([%-0-9%.]+)') do
+                data[k] = tonumber(v)
+            end
         end
     end
-    data[imdb_id] = delay
+    data[delay_key] = delay
     local out = io.open(delays_file, "w")
     if out then
         out:write("{\\n")
@@ -357,7 +384,12 @@ end)
         # Resolve persistent subtitle delay if not explicitly provided
         config_dir = Path.home() / ".config" / "dion"
         if sub_delay is None:
-            sub_delay = HistoryManager(config_dir).get_sub_delay(media.imdb_id)
+            sub_delay = HistoryManager(config_dir).get_sub_delay(
+                media.imdb_id,
+                season=episode.season if episode else None,
+                episode=episode.episode if episode else None,
+                server=source.server if source else None,
+            )
 
         lua_script = self._ensure_lua_script()
 
@@ -368,6 +400,8 @@ end)
             f"dion_imdb={media.imdb_id}",
             f"dion_config={config_dir}",
         ]
+        if source and source.server:
+            script_opts.append(f"dion_server={source.server.strip().lower()}")
         if episode:
             script_opts.append(f"dion_season={episode.season}")
             script_opts.append(f"dion_episode={episode.episode}")

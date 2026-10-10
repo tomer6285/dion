@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import curses
+import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,72 @@ from .metadata.models import EpisodeItem, MediaItem, MediaType, StreamSource
 
 console = Console()
 T = TypeVar("T")
+
+
+def wait_for_any_key(prompt: str = "\n[dim]Press any key to return to selection...[/dim]") -> None:
+    """Display a prompt and wait for any keypress before continuing."""
+    if sys.platform.startswith("win"):
+        if prompt:
+            console.print(prompt, end="")
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        try:
+            import msvcrt
+
+            msvcrt.getch()
+            while msvcrt.kbhit():
+                msvcrt.getch()
+            return
+        except (KeyboardInterrupt, EOFError):
+            return
+        except Exception:
+            pass
+
+    if not sys.stdin.isatty():
+        if prompt:
+            console.print(prompt, end="")
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        try:
+            sys.stdin.read(1)
+        except Exception:
+            pass
+        return
+
+    try:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            if prompt:
+                console.print(prompt, end="")
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+            ch = os.read(fd, 1)
+            if ch == b"\x1b" or (ch and ch[0] >= 0x80):
+                while True:
+                    r, _, _ = select.select([fd], [], [], 0.02)
+                    if not r:
+                        break
+                    os.read(fd, 1024)
+        finally:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, old_settings)
+    except (KeyboardInterrupt, EOFError):
+        pass
+    except Exception:
+        try:
+            sys.stdin.read(1)
+        except Exception:
+            pass
 
 
 def has_fzf() -> bool:
@@ -89,10 +157,7 @@ def fzf_select(
                 if val is not None:
                     console.clear()
                     on_info(val)
-                    try:
-                        console.input("\n[dim]Press Enter to return to selection...[/dim]")
-                    except (KeyboardInterrupt, EOFError):
-                        pass
+                    wait_for_any_key()
                     console.clear()
                     continue
                 return None
@@ -160,10 +225,7 @@ def questionary_select(
                 val = res[1]
                 console.clear()
                 on_info(val)
-                try:
-                    console.input("\n[dim]Press Enter to return to selection...[/dim]")
-                except (KeyboardInterrupt, EOFError):
-                    pass
+                wait_for_any_key()
                 console.clear()
                 continue
             return res

@@ -159,22 +159,28 @@ class DiscordRPC:
 
                 if episode:
                     details = media.title
-                    state = episode.display_name
+                    ep_title = (episode.title or "").strip()
+                    if ep_title and ep_title.lower() not in (f"episode {episode.episode}", f"ep {episode.episode}"):
+                        state = f"S{episode.season:02d}E{episode.episode:02d} - {ep_title}"
+                    else:
+                        state = f"Season {episode.season}, Episode {episode.episode}"
                 else:
                     details = f"{media.title} ({media.year})" if media.year else media.title
-                    state = "Watching a movie"
+                    state = None
 
                 now = time.time()
                 offset = start_time if (start_time and start_time > 10) else 0.0
                 start_ts = int(now - offset)
 
-                activity = {
+                activity: dict = {
+                    "type": 3,
                     "details": details[:128],
-                    "state": state[:128],
                     "timestamps": {
                         "start": start_ts,
                     },
                 }
+                if state:
+                    activity["state"] = state[:128]
 
                 with self._lock:
                     if self._connected:

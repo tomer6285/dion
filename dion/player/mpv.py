@@ -438,6 +438,7 @@ end)
             cmd.append(f"--slang={sub_lang},en,eng,English")
             cmd.append("--sub-auto=fuzzy")
             cmd.append("--sub-fix-timing=yes")
+            cmd.append("--sub-clear-on-seek=yes")
             if not subtitles_enabled:
                 cmd.append("--sid=no")
             if sub_delay and abs(sub_delay) > 0.01:
@@ -483,6 +484,7 @@ end)
             cmd.append("--mpv-alang=en,eng,English")
             cmd.append(f"--mpv-slang={sub_lang},en,eng,English")
             cmd.append("--mpv-sub-fix-timing=yes")
+            cmd.append("--mpv-sub-clear-on-seek=yes")
             if not subtitles_enabled:
                 cmd.append("--mpv-sid=no")
             if sub_delay and abs(sub_delay) > 0.01:

@@ -26,6 +26,8 @@ rm -rf build/pyi_dist build/pyi_build
     --exclude-module unittest \
     --exclude-module test \
     --exclude-module pydoc \
+    --hidden-import _cffi_backend \
+    --hidden-import cffi \
     --noconfirm \
     main.py
 

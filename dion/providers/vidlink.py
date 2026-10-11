@@ -6,6 +6,10 @@ import struct
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
+try:
+    import _cffi_backend
+except ImportError:
+    pass
 import nacl.secret
 import nacl.utils
 

@@ -6,6 +6,12 @@ root_dir = Path(__file__).resolve().parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
+# Ensure PyInstaller packages CFFI backend required by PyNaCl
+try:
+    import _cffi_backend  # noqa: F401
+except ImportError:
+    pass
+
 from dion.cli import app
 
 if __name__ == "__main__":

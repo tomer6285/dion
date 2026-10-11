@@ -7,6 +7,7 @@ from rich.console import Console
 from ..metadata.models import StreamSource
 from .base import BaseProvider
 from .subtitles import SubtitleResolver
+from .vidlink import VidLinkProvider
 from .vidora import VidoraProvider
 from .vixsrc import VixSrcProvider
 
@@ -20,6 +21,7 @@ class ProviderManager:
         self.providers: List[BaseProvider] = [
             VixSrcProvider(),
             VidoraProvider(),
+            VidLinkProvider(),
         ]
         self.subtitle_resolver = SubtitleResolver()
 

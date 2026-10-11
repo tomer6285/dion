@@ -353,5 +353,77 @@ class TestMpvScriptOptsAndServerScoping(unittest.TestCase):
             self.assertIn("dion_episode=1", script_opts_arg)
 
 
+class TestNativeSubtitlesDetectionAndFixA(unittest.TestCase):
+    def setUp(self):
+        self.pm = ProviderManager()
+
+    def test_has_hls_embedded_subtitles_match(self):
+        sample_hls = (
+            '#EXTM3U\n'
+            '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="eng"\n'
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English [CC]",DEFAULT=NO,AUTOSELECT=NO,LANGUAGE="eng",URI="sub_eng.m3u8"\n'
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Greek",LANGUAGE="gre",URI="sub_gre.m3u8"\n'
+        )
+        source = StreamSource(url="https://example.com/stream.m3u8", server="vixsrc", is_hls=True)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = sample_hls
+
+        with patch("httpx.get", return_value=mock_resp):
+            # Matches English
+            self.assertTrue(self.pm._has_hls_embedded_subtitles(source, {"en", "eng", "english"}))
+            # Matches Greek
+            self.assertTrue(self.pm._has_hls_embedded_subtitles(source, {"gre", "el", "greek"}))
+            # Does not match Spanish
+            self.assertFalse(self.pm._has_hls_embedded_subtitles(source, {"es", "spa", "spanish"}))
+
+    def test_has_native_subtitles_provider_tracks(self):
+        source = StreamSource(
+            url="https://example.com/video.mp4",
+            server="vidlink",
+            subtitles=[
+                SubtitleTrack(url="https://sub.com/ar.srt", label="Arabic", lang="ar"),
+                SubtitleTrack(url="https://sub.com/en.srt", label="English", lang="eng"),
+            ],
+        )
+        self.assertTrue(self.pm._has_native_subtitles(source, {"en", "eng"}))
+        self.assertFalse(self.pm._has_native_subtitles(source, {"fr", "fra"}))
+
+    def test_prioritize_subtitles_reorders_preferred_to_front(self):
+        sub_ar = SubtitleTrack(url="https://sub.com/ar.srt", label="Arabic", lang="ar")
+        sub_en = SubtitleTrack(url="https://sub.com/en.srt", label="English", lang="eng")
+        sub_fr = SubtitleTrack(url="https://sub.com/fr.srt", label="French", lang="fra")
+
+        reordered = self.pm._prioritize_subtitles([sub_ar, sub_en, sub_fr], {"en", "eng"})
+        self.assertEqual(reordered[0], sub_en)
+        self.assertIn(sub_ar, reordered[1:])
+        self.assertIn(sub_fr, reordered[1:])
+
+    def test_attach_subtitles_skips_when_hls_has_native(self):
+        source = StreamSource(url="https://example.com/stream.m3u8", server="vixsrc", is_hls=True)
+        self.pm.subtitle_resolver = MagicMock()
+
+        with patch.object(self.pm, "_has_hls_embedded_subtitles", return_value=True):
+            self.pm._attach_subtitles([source], "tt1632701", preferred_langs=["en", "eng"])
+            # Resolver was NOT called because stream already has native synced subtitles
+            self.pm.subtitle_resolver.get_subtitles.assert_not_called()
+            self.assertEqual(source.subtitles, [])
+
+    def test_attach_subtitles_fetches_when_stream_lacks_language(self):
+        source = StreamSource(url="https://example.com/stream.m3u8", server="vixsrc", is_hls=True)
+        self.pm.subtitle_resolver = MagicMock()
+        mock_sub = SubtitleTrack(url="/cached/sub.srt", label="Spanish", lang="es")
+        self.pm.subtitle_resolver.get_subtitles.return_value = [mock_sub]
+
+        with patch.object(self.pm, "_has_hls_embedded_subtitles", return_value=False):
+            self.pm._attach_subtitles([source], "tt1632701", preferred_langs=["es", "spa"])
+            # Resolver WAS called because native subtitles lacked Spanish
+            self.pm.subtitle_resolver.get_subtitles.assert_called_once()
+            self.assertEqual(len(source.subtitles), 1)
+            self.assertEqual(source.subtitles[0].url, "/cached/sub.srt")
+
+
 if __name__ == "__main__":
     unittest.main()
+

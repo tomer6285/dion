@@ -56,7 +56,7 @@ def get_provider_manager() -> ProviderManager:
     global _provider_manager
     if _provider_manager is None:
         from .providers import ProviderManager
-        _provider_manager = ProviderManager()
+        _provider_manager = ProviderManager(settings_mgr=get_settings_mgr())
     return _provider_manager
 
 
@@ -144,6 +144,7 @@ def play_or_download(
     )
 
     with console.status("[bold cyan]Resolving streaming sources...[/bold cyan]"):
+        pref_langs = [settings_mgr.sub_lang, "en", "eng", "English"]
         if episode:
             sources = pm.resolve_episode(
                 media.imdb_id,
@@ -151,9 +152,15 @@ def play_or_download(
                 episode.episode,
                 media.title,
                 released=episode.released,
+                preferred_langs=pref_langs,
             )
         else:
-            sources = pm.resolve_movie(media.imdb_id, media.title, year=media.year)
+            sources = pm.resolve_movie(
+                media.imdb_id,
+                media.title,
+                year=media.year,
+                preferred_langs=pref_langs,
+            )
 
     if not sources:
         console.print("[bold red]✕ No active stream sources found for this title.[/bold red]")

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
-from typing import List, Optional
+import tempfile
+from typing import Any, Dict, List, Optional, Set, Tuple
+import urllib.parse
 
+import httpx
 from rich.console import Console
 
-from ..metadata.models import EpisodeItem, MediaItem, StreamSource
+from ..metadata.models import EpisodeItem, MediaItem, StreamSource, SubtitleTrack
 from ..storage import HistoryManager, SettingsManager
 
 console = Console()
@@ -292,6 +297,22 @@ mp.register_event("file-loaded", function()
         end
     end)
 
+    mp.add_timeout(1.0, function()
+        local subs_file = (config_dir ~= "") and (config_dir .. "/secondary_subs.json") or nil
+        if subs_file then
+            local f = io.open(subs_file, "r")
+            if f then
+                local content = f:read("*all")
+                f:close()
+                if content and content ~= "" then
+                    for url, label, lang in content:gmatch('"url"%s*:%s*"([^"]+)"%s*,%s*"label"%s*:%s*"([^"]*)"%s*,%s*"lang"%s*:%s*"([^"]*)"') do
+                        mp.commandv("sub-add", url, "auto", (label ~= "") and label or nil, (lang ~= "") and lang or nil)
+                    end
+                end
+            end
+        end
+    end)
+
     mp.add_timeout(1.5, function()
         local sid = mp.get_property("sid")
         if sid and sid ~= "no" then
@@ -354,8 +375,154 @@ mp.register_event("shutdown", function()
     save_position()
 end)
 """
-        script_file.write_text(lua_code, encoding="utf-8")
+        if not script_file.exists() or script_file.read_text(encoding="utf-8") != lua_code:
+            script_file.write_text(lua_code, encoding="utf-8")
         return script_file
+
+    def _is_matching_sub(self, sub: SubtitleTrack, pref_set: Set[str]) -> bool:
+        """Check if an external subtitle track matches user language preferences."""
+        l_clean = (sub.lang or "").strip().lower()
+        lbl_clean = (sub.label or "").strip().lower()
+        if l_clean in pref_set:
+            return True
+        pattern = r"\b(" + "|".join(map(re.escape, pref_set)) + r")\b"
+        if re.search(pattern, lbl_clean, re.IGNORECASE):
+            return True
+        return False
+
+    def _prune_hls_playlist(
+        self, source: StreamSource, preferred_lang: str
+    ) -> Optional[Path]:
+        """Prune multi-variant HLS master playlists to avoid FFmpeg downloading dozens of unused tracks."""
+        if not source.is_hls:
+            return None
+        if not (".m3u8" in source.url or "playlist" in source.url or "/hls/" in source.url):
+            return None
+
+        try:
+            resp = httpx.get(
+                source.url,
+                headers=source.headers,
+                timeout=3.0,
+                follow_redirects=True,
+            )
+            if resp.status_code != 200 or not resp.text:
+                return None
+            text = resp.text
+        except Exception:
+            return None
+
+        # Only prune if this is a master playlist defining variants or media tracks
+        if "#EXT-X-STREAM-INF" not in text and "#EXT-X-MEDIA" not in text:
+            return None
+
+        try:
+            pref_set = {preferred_lang.strip().lower(), "en", "eng", "english"}
+            pattern_word = r"\b(" + "|".join(map(re.escape, pref_set)) + r")\b"
+
+            def is_match(lang_str: str, name_str: str) -> bool:
+                l_clean = lang_str.strip().lower()
+                n_clean = name_str.strip().lower()
+                if l_clean in pref_set:
+                    return True
+                if re.search(pattern_word, n_clean, re.IGNORECASE):
+                    return True
+                return False
+
+            def abs_uri(rel_url: str) -> str:
+                if not re.match(r"^[a-zA-Z]+://", rel_url):
+                    return urllib.parse.urljoin(source.url, rel_url)
+                return rel_url
+
+            def fix_media_uri(line_str: str) -> str:
+                m = re.search(r'URI="([^"]+)"', line_str)
+                if m:
+                    full = abs_uri(m.group(1))
+                    return line_str[:m.start(1)] + full + line_str[m.end(1):]
+                return line_str
+
+            lines = text.splitlines()
+            kept_subs: List[str] = []
+            kept_audio: List[str] = []
+            default_audio: Optional[str] = None
+
+            for line in lines:
+                if line.startswith("#EXT-X-MEDIA:TYPE=SUBTITLES"):
+                    lang_m = re.search(r'LANGUAGE="([^"]+)"', line, re.IGNORECASE)
+                    name_m = re.search(r'NAME="([^"]+)"', line, re.IGNORECASE)
+                    lang_val = lang_m.group(1) if lang_m else ""
+                    name_val = name_m.group(1) if name_m else ""
+                    if is_match(lang_val, name_val):
+                        kept_subs.append(fix_media_uri(line))
+
+                elif line.startswith("#EXT-X-MEDIA:TYPE=AUDIO"):
+                    lang_m = re.search(r'LANGUAGE="([^"]+)"', line, re.IGNORECASE)
+                    name_m = re.search(r'NAME="([^"]+)"', line, re.IGNORECASE)
+                    lang_val = lang_m.group(1) if lang_m else ""
+                    name_val = name_m.group(1) if name_m else ""
+                    if "DEFAULT=YES" in line.upper() or default_audio is None:
+                        default_audio = fix_media_uri(line)
+                    if is_match(lang_val, name_val):
+                        mod = re.sub(r"DEFAULT=[A-Za-z]+", "DEFAULT=YES", line)
+                        mod = re.sub(r"AUTOSELECT=[A-Za-z]+", "AUTOSELECT=YES", mod)
+                        kept_audio.append(fix_media_uri(mod))
+
+            if not kept_audio and default_audio:
+                kept_audio.append(default_audio)
+
+            # Parse video streams (#EXT-X-STREAM-INF followed by URL)
+            streams: List[Tuple[int, str, str]] = []
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                if line.startswith("#EXT-X-STREAM-INF"):
+                    inf = line
+                    url = None
+                    j = i + 1
+                    while j < len(lines):
+                        if lines[j].strip() and not lines[j].startswith("#"):
+                            url = lines[j].strip()
+                            break
+                        j += 1
+                    if url:
+                        bw_m = re.search(r"BANDWIDTH=([0-9]+)", inf)
+                        bw = int(bw_m.group(1)) if bw_m else 0
+                        streams.append((bw, inf, abs_uri(url)))
+                    i = j
+                i += 1
+
+            if streams:
+                streams.sort(key=lambda s: s[0], reverse=True)
+                top_stream = streams[0]
+            else:
+                top_stream = None
+
+            out: List[str] = ["#EXTM3U"]
+            for l in lines:
+                if l.startswith("#EXT-X-VERSION"):
+                    out.append(l)
+
+            for a in kept_audio:
+                out.append(a)
+            for s in kept_subs:
+                out.append(s)
+
+            if top_stream:
+                inf_line = top_stream[1]
+                if not kept_subs:
+                    inf_line = re.sub(r',?SUBTITLES="[^"]*"', "", inf_line)
+                out.append(inf_line)
+                out.append(top_stream[2])
+
+            pruned_text = "\n".join(out)
+            temp_file = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".m3u8", delete=False, encoding="utf-8"
+            )
+            temp_file.write(pruned_text)
+            temp_file.close()
+            return Path(temp_file.name)
+        except Exception:
+            return None
 
     def play(
         self,
@@ -393,6 +560,55 @@ end)
 
         lua_script = self._ensure_lua_script()
 
+        # Subtitle preferences from settings
+        subtitles_enabled = self.settings_mgr.subtitles_enabled
+        sub_lang = self.settings_mgr.sub_lang or "en"
+
+        # Solution 1: Prune multi-variant HLS master playlists to eliminate sequential sub-playlist downloads
+        pruned_file: Optional[Path] = None
+        play_url = source.url
+        if is_mpv or is_iina:
+            pruned_file = self._prune_hls_playlist(source, sub_lang)
+            if pruned_file:
+                play_url = str(pruned_file)
+
+        # Solution 2: Select primary external subtitle for instant launch and queue remainder for background loading
+        pref_set = {sub_lang.strip().lower(), "en", "eng", "english"}
+        primary_subs: List[SubtitleTrack] = []
+        secondary_subs: List[SubtitleTrack] = []
+
+        if source.subtitles:
+            for s in source.subtitles:
+                if self._is_matching_sub(s, pref_set):
+                    if not primary_subs:
+                        primary_subs.append(s)
+                    else:
+                        secondary_subs.append(s)
+                else:
+                    secondary_subs.append(s)
+
+            if not primary_subs and source.subtitles:
+                primary_subs.append(source.subtitles[0])
+                secondary_subs = source.subtitles[1:]
+
+        # Save secondary subtitles for background loading via Lua engine
+        secondary_file = config_dir / "secondary_subs.json"
+        if secondary_subs:
+            try:
+                sub_data = [
+                    {"url": s.url, "label": s.label, "lang": s.lang}
+                    for s in secondary_subs
+                ]
+                secondary_file.write_text(json.dumps(sub_data), encoding="utf-8")
+            except Exception:
+                pass
+        else:
+            if secondary_file.exists():
+                try:
+                    secondary_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
         cmd = [self.executable]
 
         # Prepare script-opts
@@ -406,10 +622,6 @@ end)
             script_opts.append(f"dion_season={episode.season}")
             script_opts.append(f"dion_episode={episode.episode}")
         script_opts_str = ",".join(script_opts)
-
-        # Subtitle preferences from settings
-        subtitles_enabled = self.settings_mgr.subtitles_enabled
-        sub_lang = self.settings_mgr.sub_lang or "en"
 
         if is_mpv:
             # Suppress all terminal output
@@ -442,9 +654,11 @@ end)
                 if k.lower() not in ("user-agent", "referer"):
                     cmd.append(f"--http-header-fields-append={k}: {v}")
 
-            # Stream connection stability:
-            # Reconnect on dropped connections without treating playlist EOF as a severed stream
-            cmd.append("--demuxer-lavf-o=reconnect=1,reconnect_delay_max=2")
+            # Stream connection stability & protocol whitelist for pruned local playlists
+            lavf_opts = ["reconnect=1", "reconnect_delay_max=2"]
+            if pruned_file:
+                lavf_opts.insert(0, 'protocol_whitelist="file,http,https,tcp,tls,crypto"')
+            cmd.append(f"--demuxer-lavf-o={','.join(lavf_opts)}")
             cmd.append("--force-window=immediate")
             cmd.append("--keep-open=no")
             cmd.append("--idle=no")
@@ -482,8 +696,8 @@ end)
             cmd.append(f"--script={lua_script}")
             cmd.append(f"--script-opts={script_opts_str}")
 
-            # Add subtitles
-            for sub in source.subtitles:
+            # Add primary subtitles (secondary loaded in background by Lua script)
+            for sub in primary_subs:
                 cmd.append(f"--sub-file={sub.url}")
 
             # Resume position if provided
@@ -495,7 +709,10 @@ end)
             cmd.append("--mpv-hwdec=auto")
             cmd.append("--mpv-profile=fast")
             cmd.append("--mpv-really-quiet")
-            cmd.append("--mpv-demuxer-lavf-o=reconnect=1,reconnect_delay_max=2")
+            lavf_opts = ["reconnect=1", "reconnect_delay_max=2"]
+            if pruned_file:
+                lavf_opts.insert(0, 'protocol_whitelist="file,http,https,tcp,tls,crypto"')
+            cmd.append(f"--mpv-demuxer-lavf-o={','.join(lavf_opts)}")
             cmd.append("--mpv-keep-open=no")
             cmd.append("--mpv-idle=no")
             cmd.append("--mpv-cache=yes")
@@ -525,7 +742,7 @@ end)
                 cmd.append(f"--mpv-sub-delay={sub_delay}")
             cmd.append(f"--mpv-script={lua_script}")
             cmd.append(f"--mpv-script-opts={script_opts_str}")
-            for sub in source.subtitles:
+            for sub in primary_subs:
                 cmd.append(f"--mpv-sub-file={sub.url}")
             if start_time and start_time > 10:
                 cmd.append(f"--mpv-start={int(start_time)}")
@@ -543,13 +760,13 @@ end)
                 cmd.append(f"--http-user-agent={ua}")
             if sub_delay and abs(sub_delay) > 0.01:
                 cmd.append(f"--sub-delay={sub_delay}")
-            for sub in source.subtitles:
+            for sub in primary_subs:
                 cmd.append(f"--sub-file={sub.url}")
             if start_time and start_time > 10:
                 cmd.append(f"--start-time={int(start_time)}")
 
-        # Target video URL
-        cmd.append(source.url)
+        # Target video URL (pruned playlist or original stream URL)
+        cmd.append(play_url)
 
         try:
             res = subprocess.run(
@@ -564,4 +781,10 @@ end)
         except Exception as e:
             console.print(f"[bold red]Player error:[/bold red] {e}")
             return 1
+        finally:
+            if pruned_file and pruned_file.exists():
+                try:
+                    pruned_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
 

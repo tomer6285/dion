@@ -424,6 +424,111 @@ class TestNativeSubtitlesDetectionAndFixA(unittest.TestCase):
             self.assertEqual(source.subtitles[0].url, "/cached/sub.srt")
 
 
+class TestMpvStartupOptimizations(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.config_dir = Path(self.temp_dir.name)
+        self.settings_mgr = SettingsManager(config_dir=self.config_dir)
+        self.player = MpvPlayer(settings_mgr=self.settings_mgr)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_is_matching_sub(self):
+        pref_set = {"en", "eng", "english"}
+        sub_en = SubtitleTrack(url="https://sub.com/en.vtt", label="English [CC]", lang="eng")
+        sub_fr = SubtitleTrack(url="https://sub.com/fr.vtt", label="French", lang="fre")
+        sub_es = SubtitleTrack(url="https://sub.com/es.vtt", label="Spanish", lang="spa")
+
+        self.assertTrue(self.player._is_matching_sub(sub_en, pref_set))
+        self.assertFalse(self.player._is_matching_sub(sub_fr, pref_set))
+        self.assertFalse(self.player._is_matching_sub(sub_es, pref_set))
+
+    def test_prune_hls_playlist(self):
+        sample_master = (
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Italian",DEFAULT=YES,AUTOSELECT=YES,LANGUAGE="ita",URI="audio/ita.m3u8"\n'
+            '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=NO,AUTOSELECT=NO,LANGUAGE="eng",URI="audio/eng.m3u8"\n'
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English [CC]",LANGUAGE="eng",URI="sub/eng.m3u8"\n'
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="French",LANGUAGE="fre",URI="sub/fre.m3u8"\n'
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Spanish",LANGUAGE="spa",URI="sub/spa.m3u8"\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=4500000,RESOLUTION=1920x1080,AUDIO="audio",SUBTITLES="subs"\n'
+            "video/1080p.m3u8\n"
+            '#EXT-X-STREAM-INF:BANDWIDTH=1800000,RESOLUTION=1280x720,AUDIO="audio",SUBTITLES="subs"\n'
+            "video/720p.m3u8\n"
+        )
+        source = StreamSource(url="https://example.com/live/master.m3u8", server="vixsrc", is_hls=True)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = sample_master
+
+        with patch("httpx.get", return_value=mock_resp):
+            pruned_path = self.player._prune_hls_playlist(source, preferred_lang="en")
+            self.assertIsNotNone(pruned_path)
+            try:
+                content = pruned_path.read_text(encoding="utf-8")
+                # English audio kept and marked default
+                self.assertIn("LANGUAGE=\"eng\"", content)
+                self.assertIn("DEFAULT=YES", content)
+                # English subtitle kept
+                self.assertIn("English [CC]", content)
+                # French and Spanish subtitles omitted
+                self.assertNotIn("French", content)
+                self.assertNotIn("Spanish", content)
+                # Italian audio omitted
+                self.assertNotIn("Italian", content)
+                # Top quality video kept with absolute URL
+                self.assertIn("https://example.com/live/video/1080p.m3u8", content)
+                # Lower quality 720p omitted
+                self.assertNotIn("720p.m3u8", content)
+            finally:
+                pruned_path.unlink(missing_ok=True)
+
+    def test_selective_subtitle_loading_in_play(self):
+        source = StreamSource(
+            url="https://example.com/video.mp4",
+            server="vidlink",
+            is_hls=False,
+            subtitles=[
+                SubtitleTrack(url="https://sub.com/ar.vtt", label="Arabic", lang="ar"),
+                SubtitleTrack(url="https://sub.com/en.vtt", label="English", lang="eng"),
+                SubtitleTrack(url="https://sub.com/es.vtt", label="Spanish", lang="spa"),
+            ],
+        )
+        media = MediaItem(
+            id="tt0111161",
+            imdb_id="tt0111161",
+            title="The Shawshank Redemption",
+            media_type=MediaType.MOVIE,
+        )
+
+        with patch.object(self.player, "executable", "/usr/local/bin/mpv"), \
+             patch("subprocess.run") as mock_run, \
+             patch.object(self.player, "_ensure_lua_script", return_value=Path("/tmp/dion.lua")), \
+             patch("pathlib.Path.home", return_value=self.config_dir.parent):
+            mock_run.return_value = MagicMock(returncode=0)
+
+            self.player.play(source=source, media=media)
+
+            cmd_called = mock_run.call_args[0][0]
+
+            # Only 1 sub-file passed on command line at launch (the matching English one)
+            sub_args = [arg for arg in cmd_called if arg.startswith("--sub-file=")]
+            self.assertEqual(len(sub_args), 1)
+            self.assertEqual(sub_args[0], "--sub-file=https://sub.com/en.vtt")
+
+            # Secondary subtitles saved to JSON for background Lua loading
+            sec_file = Path.home() / ".config" / "dion" / "secondary_subs.json"
+            if sec_file.exists():
+                data = json.loads(sec_file.read_text(encoding="utf-8"))
+                urls = [d["url"] for d in data]
+                self.assertIn("https://sub.com/ar.vtt", urls)
+                self.assertIn("https://sub.com/es.vtt", urls)
+                self.assertNotIn("https://sub.com/en.vtt", urls)
+
+
 if __name__ == "__main__":
     unittest.main()
 

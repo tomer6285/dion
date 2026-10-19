@@ -1,5 +1,7 @@
+from pathlib import Path
 import re
 from typing import List, Optional, Set
+import urllib.parse
 import httpx
 from rich.console import Console
 
@@ -114,7 +116,7 @@ class ProviderManager:
                 season=season,
                 episode=episode,
                 released=released,
-                preferred_langs=preferred_langs,
+                preferred_langs=effective_langs,
             )
 
         return sources
@@ -179,6 +181,66 @@ class ProviderManager:
         non_matching = [s for s in subtitles if s not in matching]
         return matching + non_matching
 
+    def _get_stream_duration(self, source: StreamSource) -> Optional[float]:
+        """Determine total playback duration of an HLS stream source in seconds."""
+        if not (source.is_hls or ".m3u8" in source.url):
+            return None
+        try:
+            headers = dict(source.headers)
+            resp = httpx.get(
+                source.url,
+                headers=headers,
+                timeout=2.0,
+                follow_redirects=True,
+            )
+            if resp.status_code != 200 or not resp.text:
+                return None
+            text = resp.text
+
+            # Direct media playlist with segment durations
+            if "#EXTINF:" in text:
+                durs = [float(d) for d in re.findall(r"#EXTINF:([0-9.]+)", text)]
+                return sum(durs) if durs else None
+
+            # Master playlist: find first variant stream
+            if "#EXT-X-STREAM-INF" in text:
+                lines = text.splitlines()
+                for i, line in enumerate(lines):
+                    if line.startswith("#EXT-X-STREAM-INF"):
+                        for j in range(i + 1, len(lines)):
+                            cand = lines[j].strip()
+                            if cand and not cand.startswith("#"):
+                                variant_url = cand
+                                if not re.match(r"^[a-zA-Z]+://", variant_url):
+                                    variant_url = urllib.parse.urljoin(str(resp.url), variant_url)
+                                m_resp = httpx.get(
+                                    variant_url,
+                                    headers=headers,
+                                    timeout=2.0,
+                                    follow_redirects=True,
+                                )
+                                if m_resp.status_code == 200 and "#EXTINF:" in m_resp.text:
+                                    durs = [float(d) for d in re.findall(r"#EXTINF:([0-9.]+)", m_resp.text)]
+                                    return sum(durs) if durs else None
+                                break
+                        break
+        except Exception:
+            pass
+        return None
+
+    def _get_subtitle_duration(self, sub: SubtitleTrack) -> Optional[float]:
+        """Extract the end timestamp of the final subtitle cue in seconds."""
+        if getattr(sub, "duration", None) is not None:
+            return sub.duration
+        try:
+            path = Path(sub.url)
+            if path.exists():
+                text = path.read_text(encoding="utf-8", errors="replace")
+                return self.subtitle_resolver._extract_subtitle_duration(text)
+        except Exception:
+            pass
+        return None
+
     def _attach_subtitles(
         self,
         sources: List[StreamSource],
@@ -221,11 +283,21 @@ class ProviderManager:
             )
             if extra_subs:
                 for src in sources_needing_subs:
-                    existing_urls = {s.url for s in extra_subs}
-                    src.subtitles = extra_subs + [
-                        s for s in src.subtitles if s.url not in existing_urls
-                    ]
+                    stream_dur = self._get_stream_duration(src)
+                    valid_subs: List[SubtitleTrack] = []
+                    for sub in extra_subs:
+                        sub_dur = self._get_subtitle_duration(sub)
+                        # Sanity check: if both durations are known and differ by > 90s,
+                        # reject as a cut mismatch (e.g. 47m extended cut vs 43m syndication)
+                        if stream_dur is not None and sub_dur is not None:
+                            if abs(stream_dur - sub_dur) > 90.0:
+                                continue
+                        valid_subs.append(sub)
+
+                    if valid_subs:
+                        existing_urls = {s.url for s in valid_subs}
+                        src.subtitles = valid_subs + [
+                            s for s in src.subtitles if s.url not in existing_urls
+                        ]
         except Exception:
             pass
-
-

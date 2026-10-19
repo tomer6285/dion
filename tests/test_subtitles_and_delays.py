@@ -529,6 +529,144 @@ class TestMpvStartupOptimizations(unittest.TestCase):
                 self.assertNotIn("https://sub.com/en.vtt", urls)
 
 
+
+
+class TestSubtitleTagWordBoundariesAndDurationSanity(unittest.TestCase):
+    def setUp(self):
+        self.pm = ProviderManager()
+        self.resolver = self.pm.subtitle_resolver
+
+    def test_word_boundary_does_not_penalize_suits_or_scrubs(self):
+        c_suits = SubtitleCandidate(
+            provider="os_v3",
+            sub_id="1",
+            url="http://sub/suits.srt",
+            lang="en",
+            lang_id="en",
+            release_name="Suits.S03E01.1080p.WEB-DL.DD5.1.H.264-HWD",
+            file_name="Suits.S03E01.1080p.WEB-DL.DD5.1.H.264-HWD.srt",
+            release_format="WEB-DL",
+        )
+        c_scrubs = SubtitleCandidate(
+            provider="os_v3",
+            sub_id="2",
+            url="http://sub/scrubs.srt",
+            lang="en",
+            lang_id="en",
+            release_name="Scrubs.S01E01.HDTV",
+            file_name="Scrubs.S01E01.HDTV.srt",
+            release_format="HDTV",
+        )
+        c_telesync = SubtitleCandidate(
+            provider="os_v3",
+            sub_id="3",
+            url="http://sub/ts.srt",
+            lang="en",
+            lang_id="en",
+            release_name="Movie.2023.TS.X264",
+            file_name="Movie.2023.TS.srt",
+            release_format="TS",
+        )
+
+        with patch.object(self.resolver, "_fetch_opensubtitles_v3", return_value=[c_suits, c_telesync, c_scrubs]), \
+             patch.object(self.resolver, "_fetch_wyzie", return_value=[]), \
+             patch.object(self.resolver, "_fetch_subdl", return_value=[]), \
+             patch.object(self.resolver, "_download_and_cache_parallel", side_effect=lambda cands, imdb: [
+                 SubtitleTrack(url=c.url, label=c.release_name, lang=c.lang_id) for c in cands
+             ]):
+            selected = self.resolver._resolve_subtitles("tt1632701", season=3, episode=1)
+            selected_urls = [s.url for s in selected]
+
+            self.assertIn("http://sub/suits.srt", selected_urls)
+            self.assertIn("http://sub/scrubs.srt", selected_urls)
+            self.assertEqual(selected[0].url, "http://sub/suits.srt")
+
+    def test_extract_subtitle_duration(self):
+        sample_srt = (
+            "1\n00:00:01,000 --> 00:00:04,500\nHello\n\n"
+            "2\n00:43:02,000 --> 00:43:05,250\nGoodbye\n"
+        )
+        dur = self.resolver._extract_subtitle_duration(sample_srt)
+        self.assertIsNotNone(dur)
+        self.assertAlmostEqual(dur, 43 * 60 + 5.25, places=2)
+
+        self.assertIsNone(self.resolver._extract_subtitle_duration(""))
+        self.assertIsNone(self.resolver._extract_subtitle_duration("No timestamps here"))
+
+    def test_get_stream_duration_direct_hls(self):
+        sample_media_hls = (
+            "#EXTM3U\n"
+            "#EXTINF:10.500,\nsegment1.ts\n"
+            "#EXTINF:9.500,\nsegment2.ts\n"
+            "#EXT-X-ENDLIST\n"
+        )
+        source = StreamSource(url="https://example.com/media.m3u8", server="test", is_hls=True)
+        mock_resp = MagicMock(status_code=200, text=sample_media_hls)
+
+        with patch("httpx.get", return_value=mock_resp):
+            dur = self.pm._get_stream_duration(source)
+            self.assertEqual(dur, 20.0)
+
+    def test_get_stream_duration_master_playlist(self):
+        sample_master = (
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=2000000\n"
+            "variant/720p.m3u8\n"
+        )
+        sample_variant = (
+            "#EXTM3U\n"
+            "#EXTINF:15.000,\nseg1.ts\n"
+            "#EXTINF:15.000,\nseg2.ts\n"
+            "#EXT-X-ENDLIST\n"
+        )
+        source = StreamSource(url="https://example.com/master.m3u8", server="test", is_hls=True)
+
+        def mock_get(url, **kwargs):
+            m = MagicMock(status_code=200)
+            if "master.m3u8" in str(url):
+                m.text = sample_master
+                m.url = "https://example.com/master.m3u8"
+            else:
+                m.text = sample_variant
+                m.url = "https://example.com/variant/720p.m3u8"
+            return m
+
+        with patch("httpx.get", side_effect=mock_get):
+            dur = self.pm._get_stream_duration(source)
+            self.assertEqual(dur, 30.0)
+
+    def test_attach_subtitles_rejects_cut_mismatch(self):
+        source = StreamSource(url="https://example.com/stream.m3u8", server="vixsrc", is_hls=True)
+        mismatched_sub = SubtitleTrack(
+            url="/path/sub_47m.srt",
+            label="English (WEB-DL)",
+            lang="en",
+            duration=2840.0,
+        )
+
+        with patch.object(self.pm, "_has_native_subtitles", return_value=False), \
+             patch.object(self.pm, "_get_stream_duration", return_value=2580.0), \
+             patch.object(self.pm.subtitle_resolver, "get_subtitles", return_value=[mismatched_sub]):
+            self.pm._attach_subtitles([source], "tt1632701", preferred_langs=["en", "eng"])
+            self.assertEqual(source.subtitles, [])
+
+    def test_attach_subtitles_accepts_matching_duration(self):
+        source = StreamSource(url="https://example.com/stream.m3u8", server="vidora", is_hls=True)
+        matching_sub = SubtitleTrack(
+            url="/path/sub_47m.srt",
+            label="English (WEB-DL)",
+            lang="en",
+            duration=2840.0,
+        )
+
+        with patch.object(self.pm, "_has_native_subtitles", return_value=False), \
+             patch.object(self.pm, "_get_stream_duration", return_value=2832.0), \
+             patch.object(self.pm.subtitle_resolver, "get_subtitles", return_value=[matching_sub]):
+            self.pm._attach_subtitles([source], "tt1632701", preferred_langs=["en", "eng"])
+            self.assertEqual(len(source.subtitles), 1)
+            self.assertEqual(source.subtitles[0].url, "/path/sub_47m.srt")
+
+
 if __name__ == "__main__":
     unittest.main()
 

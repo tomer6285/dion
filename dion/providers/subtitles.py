@@ -265,17 +265,17 @@ class SubtitleResolver:
                 "NOGRP", "CAM", "TELESYNC", "TS", "HDCAM", "HDTS",
             ]
             for tag in bad_tags:
-                if tag in comb:
+                if re.search(rf"\b{re.escape(tag)}\b", comb):
                     score -= 600
 
             # 3. Boost high-quality matching release types (Vidora/Vixsrc streams WEB-DL/1080p)
-            if "1080P" in comb:
+            if re.search(r"\b1080P\b", comb):
                 score += 100
-            if "WEB-DL" in comb or "WEBDL" in comb:
+            if re.search(r"\bWEB-?DL\b", comb):
                 score += 150
-            elif "HDTV" in comb:
+            elif re.search(r"\bHDTV\b", comb):
                 score += 80
-            elif "BLURAY" in comb or "BDRIP" in comb or "BRRIP" in comb:
+            elif re.search(r"\b(BLURAY|BDRIP|BRRIP)\b", comb):
                 score += 100
 
             # 4. Scene group bonus
@@ -284,7 +284,7 @@ class SubtitleResolver:
                 "BATV", "DEFLATE", "KILLERS", "AVS", "PSA",
             ]
             for sg in scene_groups:
-                if sg in comb:
+                if re.search(rf"\b{re.escape(sg)}\b", comb):
                     score += 50
 
             # 5. Community rating
@@ -650,6 +650,20 @@ class SubtitleResolver:
 
         return None
 
+    def _extract_subtitle_duration(self, text: str) -> Optional[float]:
+        """Find the maximum end timestamp among subtitle cues in seconds."""
+        if not text:
+            return None
+        matches = re.findall(r"-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})", text)
+        if not matches:
+            return None
+        max_sec = 0.0
+        for h, m, s, ms in matches:
+            sec = int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+            if sec > max_sec:
+                max_sec = sec
+        return max_sec if max_sec > 0 else None
+
     def _download_single_candidate(
         self,
         candidate: SubtitleCandidate,
@@ -672,11 +686,18 @@ class SubtitleResolver:
         )
 
         # Check existing cache
+        sub_text: Optional[str] = None
         if local_path.exists() and local_path.stat().st_size > 100:
+            track_url = str(local_path)
+            try:
+                sub_text = local_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
             return SubtitleTrack(
-                url=str(local_path),
+                url=track_url,
                 label=label,
                 lang=candidate.lang_id,
+                duration=self._extract_subtitle_duration(sub_text) if sub_text else None,
             )
 
         # Legacy dionysus cache check
@@ -692,10 +713,13 @@ class SubtitleResolver:
 
             try:
                 shutil.copy2(old_path, local_path)
+                track_url = str(local_path)
+                sub_text = local_path.read_text(encoding="utf-8", errors="replace")
                 return SubtitleTrack(
-                    url=str(local_path),
+                    url=track_url,
                     label=label,
                     lang=candidate.lang_id,
+                    duration=self._extract_subtitle_duration(sub_text) if sub_text else None,
                 )
             except Exception:
                 pass
@@ -711,10 +735,12 @@ class SubtitleResolver:
         except Exception:
             track_url = candidate.url
 
+        duration = self._extract_subtitle_duration(sub_text) if sub_text else None
         return SubtitleTrack(
             url=track_url,
             label=label,
             lang=candidate.lang_id,
+            duration=duration,
         )
 
     def _download_and_cache_parallel(

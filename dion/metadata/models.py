@@ -52,6 +52,7 @@ class SubtitleTrack:
     url: str
     label: str
     lang: str = "en"
+    duration: Optional[float] = None
 
 
 @dataclass
@@ -62,4 +63,3 @@ class StreamSource:
     quality: str = "auto"
     headers: Dict[str, str] = field(default_factory=dict)
     subtitles: List[SubtitleTrack] = field(default_factory=list)
-

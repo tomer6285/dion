@@ -175,6 +175,10 @@ class DiscordRPC:
                 activity: dict = {
                     "type": 3,
                     "details": details[:128],
+                    "assets": {
+                        "large_image": "dion_logo",
+                        "large_text": "Dion",
+                    },
                     "timestamps": {
                         "start": start_ts,
                     },

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from ..platforms import find_player, prepare_config_directory
 
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
@@ -27,13 +28,7 @@ class SettingsManager:
 
     def __init__(self, config_dir: Optional[Path] = None):
         if config_dir is None:
-            config_dir = Path.home() / ".config" / "dion"
-            old_config = Path.home() / ".config" / "dionysus"
-            if not config_dir.exists() and old_config.exists():
-                try:
-                    shutil.copytree(old_config, config_dir)
-                except Exception:
-                    pass
+            config_dir = prepare_config_directory()
         self.config_dir = config_dir
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.settings_file = self.config_dir / "settings.json"
@@ -124,13 +119,13 @@ class SettingsManager:
         """Resolves the executable path according to configured player preference."""
         pref = self.player.strip()
         if pref and pref != "auto":
-            path = shutil.which(pref) or (pref if Path(pref).is_file() else None)
+            path = find_player(pref) or (pref if Path(pref).is_file() else None)
             if path:
                 return path
 
         # Auto-detection fallback among supported players
         for candidate in ["mpv", "iina", "vlc"]:
-            path = shutil.which(candidate)
+            path = find_player(candidate)
             if path:
                 return path
         return None
@@ -140,7 +135,7 @@ class SettingsManager:
         """Return list of supported media players installed on the current system."""
         found = []
         for name in ["mpv", "iina", "vlc"]:
-            p = shutil.which(name)
+            p = find_player(name)
             if p:
                 found.append({"name": name, "path": p})
         return found

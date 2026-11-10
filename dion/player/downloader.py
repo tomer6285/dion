@@ -179,7 +179,13 @@ class StreamDownloader:
         episode: Optional[EpisodeItem] = None,
         video_format: str = "mp4",
     ) -> str:
-        safe_title = "".join(c for c in media.title if c.isalnum() or c in " ._-").strip()
+        safe_title = "".join(c for c in media.title if c.isalnum() or c in " ._-").strip(" .")
+        if not safe_title:
+            safe_title = "untitled"
+        reserved_names = {"CON", "PRN", "AUX", "NUL"}
+        reserved_names.update(f"{prefix}{i}" for prefix in ("COM", "LPT") for i in range(1, 10))
+        if safe_title.split(".")[0].rstrip(" ").upper() in reserved_names:
+            safe_title = "_" + safe_title
         ext = video_format.lstrip(".").lower()
         if episode:
             return f"{safe_title}.S{episode.season:02d}E{episode.episode:02d}.{ext}"

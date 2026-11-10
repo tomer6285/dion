@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.9+-3776AB?style=flat&logo=python&logoColor=white" alt="Python 3.9+">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat" alt="Platforms">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat" alt="Platforms">
   <img src="https://img.shields.io/badge/stream-100%25%20Direct%20HTTPS%20%2F%20HLS-blue?style=flat" alt="Direct HTTPS">
   <img src="https://img.shields.io/badge/player-mpv%20%7C%20iina%20%7C%20vlc-orange?style=flat" alt="Supported Players">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat" alt="License">
@@ -79,6 +79,26 @@ sudo pacman -S mpv
 sudo dnf install mpv
 ```
 *(Note: Dion also auto-detects `iina` on macOS or `vlc` on Linux/macOS if mpv is not installed).*
+
+### Windows
+
+Install Python 3.9+ and mpv (recommended) or VLC. Add the player's executable
+folder to `PATH`, or select its full executable path in `dion -S`. Dion also
+checks common Program Files and per-user installation directories. IINA is
+macOS-only. Optional `fzf`, `yt-dlp`, and `ffmpeg` must be available on `PATH`.
+
+From PowerShell in the checkout:
+
+```powershell
+py -3 -m pip install .
+dion --help
+dion "Inception"
+```
+
+Windows uses the arrow-key selection menu instead of the curses media browser.
+Search, playback, mpv resume/subtitle sync, settings, and downloads use the same
+commands as on Linux and macOS. A terminal session is required; launch Dion from
+PowerShell or Command Prompt.
 
 ### 2. Recommended Utilities (Optional)
 - **`fzf`**: Enables lightning-fast interactive fuzzy search (recommended):
@@ -306,7 +326,12 @@ When streaming with `mpv`, Dion injects a custom Lua engine providing enhanced s
 
 ## ⚙️ Configuration & Storage
 
-Dion stores your preferences and watch progress in standard XDG configuration folders:
+Dion stores preferences and watch progress in `~/.config/dion` on Linux/macOS
+and `%APPDATA%\Dion` on Windows (falling back to the user profile's
+`AppData\Roaming\Dion`). Existing `~/.config/dion` or `~/.config/dionysus` data
+is copied on first use when the destination does not exist. The player and its
+Lua script use the same directory:
+
 
 ```text
 ~/.config/dion/
@@ -341,13 +366,26 @@ The script will:
 
 ---
 
+### Building on Windows
+
+Run this on a Windows machine with Python installed:
+
+```powershell
+powershell -File .\build.ps1
+```
+
+This creates an isolated build environment, builds with PyInstaller, checks
+`dion.exe --help`, and produces `dist\dion-windows.zip`. Extract the entire
+archive and run `dion\dion.exe` from a terminal. Keep the bundled files together.
+The player and optional download tools are installed separately.
+
 ## Continuous Integration
 
-GitHub Actions runs CI on pull requests, pushes to `main`, and manual runs from
-the Actions tab. The workflow uses Linux and Python 3.12 to run the unit tests,
-check `dion --help`, build and validate the wheel and source distribution, and
-verify CLI startup from the wheel installed in a clean environment outside the
-checkout.
+GitHub Actions runs unit tests, CLI startup, distribution validation, and clean
+wheel installation on Linux and Windows with Python 3.12. A separate Windows
+job builds and smoke-tests the executable and uploads the ZIP artifact. Live
+player interaction and Discord presence still require a manual Windows smoke
+test; CI does not exercise external streaming services.
 
 To run the test and CLI checks locally after installing Dion:
 
@@ -358,8 +396,7 @@ dion --help
 
 After the first workflow run, configure a GitHub ruleset for `main` to require
 the `Tests and CLI` and `Package installation` status checks before merging.
-This repository currently tests Python 3.12 on Linux; CI coverage can be expanded
-to other supported Python versions and macOS later.
+CI coverage can be expanded to other supported Python versions and macOS later.
 
 ---
 

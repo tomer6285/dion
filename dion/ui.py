@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import curses
+try:
+    import curses
+except ImportError:
+    curses = None
 import os
 import re
 import select
@@ -470,6 +473,12 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
     """Interactive full-screen media selector with Vim keybindings and filters."""
     if not items:
         return None
+
+    if curses is None or sys.platform == "win32":
+        return prompt_select("Select title", [
+            (f"[{item.media_type.value}] {item.title} ({item.year or '?'})", item)
+            for item in items
+        ])
 
     state = MediaSelectorState(items)
 

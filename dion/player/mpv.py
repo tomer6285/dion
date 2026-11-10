@@ -9,12 +9,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import urllib.parse
 
 import httpx
-from rich.console import Console
+from ..console import console
 
 from ..metadata.models import EpisodeItem, MediaItem, StreamSource, SubtitleTrack
 from ..storage import HistoryManager, SettingsManager
 
-console = Console()
 
 
 class MpvPlayer:

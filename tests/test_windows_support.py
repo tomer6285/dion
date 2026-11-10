@@ -20,6 +20,30 @@ class WindowsSupportTests(unittest.TestCase):
         code = "import sys; sys.modules['curses'] = None; from dion.cli import app"
         subprocess.run([sys.executable, '-c', code], check=True, capture_output=True)
 
+    def test_batch_downloads_with_cp1252_output(self):
+        env = dict(os.environ, PYTHONIOENCODING="cp1252:strict")
+        result = subprocess.run([
+            sys.executable, "-m", "unittest",
+            "tests.test_downloader.TestBatchSeasonDownloader.test_download_batch_with_skipping_existing_and_mocked_workers",
+            "tests.test_downloader.TestCliBatchIntegration.test_download_season_batch_calls_downloader",
+        ], env=env, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("cp1252"))
+
+    def test_output_preserves_encoding_and_utf8_glyphs(self):
+        code = (
+            "import sys; from dion.console import console; "
+            "print(sys.stdout.encoding); console.print('🍇⠋', end='')"
+        )
+        for encoding, expected in (("cp1252", "??"), ("utf-8", "🍇⠋")):
+            with self.subTest(encoding=encoding):
+                result = subprocess.run(
+                    [sys.executable, "-c", code], capture_output=True,
+                    env=dict(os.environ, PYTHONIOENCODING=encoding + ":strict"),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = result.stdout.decode(encoding).splitlines()
+                self.assertEqual(output, [encoding, expected])
+
     def test_config_migrates_and_managers_agree(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

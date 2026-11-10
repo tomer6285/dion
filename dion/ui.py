@@ -15,13 +15,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import questionary
 from prompt_toolkit.formatted_text import ANSI
-from rich.console import Console
+from .console import console
 from rich.panel import Panel
 from rich.text import Text
 
 from .metadata.models import EpisodeItem, MediaItem, MediaType, StreamSource
 
-console = Console()
 T = TypeVar("T")
 
 

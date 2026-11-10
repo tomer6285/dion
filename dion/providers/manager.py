@@ -3,7 +3,7 @@ import re
 from typing import List, Optional, Set
 import urllib.parse
 import httpx
-from rich.console import Console
+from ..console import console
 
 from ..metadata.models import StreamSource, SubtitleTrack
 from ..storage.settings import SettingsManager
@@ -13,7 +13,6 @@ from .vidlink import VidLinkProvider
 from .vidora import VidoraProvider
 from .vixsrc import VixSrcProvider
 
-console = Console()
 
 
 class ProviderManager:

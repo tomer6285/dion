@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tupl
 import zipfile
 
 import httpx
-from rich.console import Console
+from ..console import console
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -31,7 +31,6 @@ from ..metadata.models import EpisodeItem, MediaItem, MediaType, StreamSource, S
 if TYPE_CHECKING:
     from ..providers import ProviderManager
 
-console = Console()
 
 # ISO 639-1 / common name to ISO 639-2 (3-letter) mapping for FFmpeg
 ISO_639_MAP: Dict[str, str] = {

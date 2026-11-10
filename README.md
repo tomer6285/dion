@@ -382,8 +382,9 @@ The player and optional download tools are installed separately.
 ## Continuous Integration
 
 GitHub Actions runs unit tests, CLI startup, distribution validation, and clean
-wheel installation on Linux and Windows with Python 3.12. A separate Windows
-job builds and smoke-tests the executable and uploads the ZIP artifact. Live
+wheel installation on Linux and Windows with Python 3.12. The Binary installation
+job builds the Linux and Windows standalone packages, installs them outside the
+checkout, checks first and subsequent startup, and uploads the binary artifacts. Live
 player interaction and Discord presence still require a manual Windows smoke
 test; CI does not exercise external streaming services.
 

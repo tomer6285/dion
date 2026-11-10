@@ -341,6 +341,28 @@ The script will:
 
 ---
 
+## Continuous Integration
+
+GitHub Actions runs CI on pull requests, pushes to `main`, and manual runs from
+the Actions tab. The workflow uses Linux and Python 3.12 to run the unit tests,
+check `dion --help`, build and validate the wheel and source distribution, and
+verify CLI startup from the wheel installed in a clean environment outside the
+checkout.
+
+To run the test and CLI checks locally after installing Dion:
+
+```bash
+python -m unittest discover -s tests -v
+dion --help
+```
+
+After the first workflow run, configure a GitHub ruleset for `main` to require
+the `Tests and CLI` and `Package installation` status checks before merging.
+This repository currently tests Python 3.12 on Linux; CI coverage can be expanded
+to other supported Python versions and macOS later.
+
+---
+
 ## 📂 Project Architecture
 
 ```text

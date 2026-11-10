@@ -569,9 +569,13 @@ def main(
     # 1. Handle continue watching & history selection
     if continue_watching or show_history:
         console.clear()
-        items = history_mgr.list_history()
+        items = (
+            history_mgr.list_continue_watching() if continue_watching
+            else history_mgr.list_history()
+        )
         if not items:
-            console.print("[yellow]No watch history found.[/yellow]")
+            message = "No continue watching titles found." if continue_watching else "No watch history found."
+            console.print(f"[yellow]{message}[/yellow]")
             raise typer.Exit(0)
 
         # Advance any completed series episodes to the next episode
@@ -614,6 +618,7 @@ def main(
                                     episode=next_ep,
                                     playback_position=0.0,
                                     duration=item.get("duration"),
+                                    restore_continue=False,
                                 )
                         except Exception:
                             pass
@@ -657,10 +662,12 @@ def main(
 
             show_media_info(details, ep)
 
-        choices = [(format_history_choice(i), i) for i in items]
-
-        prompt_title = "Continue watching" if continue_watching else "Select from history"
-        selected = prompt_select(prompt_title, choices, on_info=on_history_info)
+        if continue_watching:
+            from .continue_menu import select_continue
+            selected = select_continue(items, history_mgr, on_info=on_history_info)
+        else:
+            choices = [(format_history_choice(i), i) for i in items]
+            selected = prompt_select("Select from history", choices, on_info=on_history_info)
         console.clear()
         if not selected:
             return

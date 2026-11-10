@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -240,6 +242,7 @@ class HistoryManager:
         episode: Optional[EpisodeItem] = None,
         playback_position: Optional[float] = None,
         duration: Optional[float] = None,
+        restore_continue: bool = True,
     ) -> None:
         """Save or update an entry in the watch history."""
         items: List[Dict[str, Any]] = self._data.get("items", [])
@@ -286,6 +289,9 @@ class HistoryManager:
         items.insert(0, entry)
         # Keep last 50 entries
         self._data["items"] = items[:50]
+        if restore_continue:
+            hidden = self._data.get("hidden_from_continue", [])
+            self._data["hidden_from_continue"] = [key for key in hidden if key != media.imdb_id]
         self._save()
 
     def populate_missing_durations(
@@ -357,6 +363,39 @@ class HistoryManager:
         """Return recent watch history with up-to-date resume positions."""
         self._sync_positions()
         return self._data.get("items", [])[:limit]
+
+    def list_continue_watching(self, limit: int = 15) -> List[Dict[str, Any]]:
+        """Filter hidden titles before applying the display limit."""
+        self._sync_positions()
+        hidden = set(self._data.get("hidden_from_continue", []))
+        return [item for item in self._data.get("items", [])
+                if item.get("imdb_id") not in hidden][:limit]
+
+    def set_continue_hidden(self, imdb_id: str, hidden: bool) -> None:
+        """Persist visibility atomically; failures leave memory and disk unchanged.
+
+        Visibility is separate from the title's metadata and playback files.
+        """
+        keys = set(self._data.get("hidden_from_continue", []))
+        if hidden:
+            keys.add(imdb_id)
+        else:
+            keys.discard(imdb_id)
+        updated = dict(self._data, hidden_from_continue=sorted(keys))
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.config_dir, delete=False,
+            ) as stream:
+                path = Path(stream.name)
+                json.dump(updated, stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            path.replace(self.history_file)
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
+        self._data = updated
 
     def clear_history(self) -> None:
         """Clear all watch history entries and playback positions."""

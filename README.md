@@ -207,6 +207,16 @@ dion -D
 dion --delete-history
 ```
 
+In Continue Watching, press **Ctrl+D twice** to remove the highlighted title.
+The first press names the title and asks for confirmation; **Esc**, navigation,
+or typing cancels it. The cursor stays in place after removal. **Ctrl+Z** undoes
+removals during the current menu session, even after removing the last entry.
+**Tab** shows title information without interrupting search.
+
+Removal only hides the title from Continue Watching. Watch history and playback
+progress remain saved; playing the title again adds it back. This menu keeps
+fzf's fuzzy search when available, with questionary as the fallback.
+
 ### Settings Dashboard
 Configure default playback preferences with the built-in interactive menu:
 ```bash

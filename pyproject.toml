@@ -16,6 +16,12 @@ dependencies = [
     "pynacl>=1.5.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pexpect>=4.8; sys_platform != 'win32'",
+]
+
 [project.scripts]
 dion = "dion.cli:app"
 

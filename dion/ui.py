@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import curses
+try:
+    import curses
+except ImportError:
+    curses = None
 import os
 import re
 import select
@@ -12,13 +15,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import questionary
 from prompt_toolkit.formatted_text import ANSI
-from rich.console import Console
+from .console import console
 from rich.panel import Panel
 from rich.text import Text
 
 from .metadata.models import EpisodeItem, MediaItem, MediaType, StreamSource
 
-console = Console()
 T = TypeVar("T")
 
 
@@ -470,6 +472,12 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
     """Interactive full-screen media selector with Vim keybindings and filters."""
     if not items:
         return None
+
+    if curses is None or sys.platform == "win32":
+        return prompt_select("Select title", [
+            (f"[{item.media_type.value}] {item.title} ({item.year or '?'})", item)
+            for item in items
+        ])
 
     state = MediaSelectorState(items)
 

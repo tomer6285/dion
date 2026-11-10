@@ -16,7 +16,11 @@ concurrency:
 jobs:
   test:
     name: Tests and CLI
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -36,7 +40,11 @@ jobs:
 
   package:
     name: Package installation
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -53,10 +61,75 @@ jobs:
         run: |
           python -m build
           python -m twine check dist/*
-      - name: Install wheel in a clean environment
+      - name: Install wheel and check CLI outside checkout
+        shell: python
         run: |
-          python -m venv "$RUNNER_TEMP/dion-wheel-venv"
-          "$RUNNER_TEMP/dion-wheel-venv/bin/python" -m pip install dist/*.whl
-      - name: Check installed CLI outside the checkout
-        working-directory: ${{ runner.temp }}
-        run: '"$RUNNER_TEMP/dion-wheel-venv/bin/dion" --help'
+          import os
+          from pathlib import Path
+          import subprocess
+          import venv
+          root = Path(os.environ["RUNNER_TEMP"]) / "dion-wheel-venv"
+          venv.create(root, with_pip=True)
+          scripts = root / ("Scripts" if os.name == "nt" else "bin")
+          python = scripts / ("python.exe" if os.name == "nt" else "python")
+          wheel = next(Path("dist").glob("*.whl")).resolve()
+          subprocess.run([str(python), "-m", "pip", "install", str(wheel)], check=True)
+          cli = scripts / ("dion.exe" if os.name == "nt" else "dion")
+          subprocess.run([str(cli), "--help"], cwd=os.environ["RUNNER_TEMP"], check=True)
+
+  binary:
+    name: Binary installation
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: dion-linux
+            path: dist/dion
+          - os: windows-latest
+            artifact: dion-windows
+            path: dist/dion-windows.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build Unix executable
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./build.sh
+      - name: Build Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./build.ps1
+      - name: Install binary and check startup outside checkout
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import zipfile
+          root = Path(os.environ["RUNNER_TEMP"]) / "dion-binary-install"
+          root.mkdir()
+          env = dict(os.environ)
+          if os.name == "nt":
+              with zipfile.ZipFile("dist/dion-windows.zip") as archive:
+                  archive.extractall(root)
+              cli = root / "dion" / "dion.exe"
+          else:
+              cli = root / "dion"
+              shutil.copy2("dist/dion", cli)
+              env["XDG_CACHE_HOME"] = str(root / "cache")
+          # Check both first launch and a subsequent launch (Unix cache reuse).
+          for _ in range(2):
+              subprocess.run([str(cli), "--help"], cwd=root, env=env, check=True)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error

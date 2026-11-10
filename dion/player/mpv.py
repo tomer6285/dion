@@ -3,19 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 import urllib.parse
 
 import httpx
-from rich.console import Console
+from ..console import console
 
 from ..metadata.models import EpisodeItem, MediaItem, StreamSource, SubtitleTrack
 from ..storage import HistoryManager, SettingsManager
 
-console = Console()
 
 
 class MpvPlayer:
@@ -27,21 +25,17 @@ class MpvPlayer:
         settings_mgr: Optional[SettingsManager] = None,
     ):
         self.settings_mgr = settings_mgr or SettingsManager()
-        self.executable = executable or self.settings_mgr.resolve_player_executable() or self._find_player()
+        self.executable = executable or self._find_player()
 
     def _find_player(self) -> Optional[str]:
-        for candidate in ["mpv", "iina", "vlc"]:
-            path = shutil.which(candidate)
-            if path:
-                return path
-        return None
+        return self.settings_mgr.resolve_player_executable()
 
     def is_available(self) -> bool:
         return self.executable is not None
 
     def _ensure_lua_script(self) -> Path:
         """Create or update the Dion subtitle synchronization and OSD Lua engine."""
-        scripts_dir = Path.home() / ".config" / "dion" / "scripts"
+        scripts_dir = self.settings_mgr.config_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         script_file = scripts_dir / "dion_subtitles.lua"
 
@@ -538,6 +532,7 @@ end)
                 "[bold red]Error:[/bold red] No compatible video player found!\n"
                 "Please install [bold cyan]mpv[/bold cyan]:\n"
                 "  • macOS: [yellow]brew install mpv[/yellow]\n"
+                "  • Windows: install mpv and add it to PATH, or set its path in dion -S\n"
                 "  • Linux: [yellow]sudo apt install mpv[/yellow] or [yellow]sudo pacman -S mpv[/yellow]\n"
             )
             return 1
@@ -549,7 +544,7 @@ end)
             title_str += f" - {episode.display_name}"
 
         # Resolve persistent subtitle delay if not explicitly provided
-        config_dir = Path.home() / ".config" / "dion"
+        config_dir = self.settings_mgr.config_dir
         if sub_delay is None:
             sub_delay = HistoryManager(config_dir).get_sub_delay(
                 media.imdb_id,
@@ -614,7 +609,7 @@ end)
         # Prepare script-opts
         script_opts = [
             f"dion_imdb={media.imdb_id}",
-            f"dion_config={config_dir}",
+            f"dion_config={config_dir.as_posix()}",
         ]
         if source and source.server:
             script_opts.append(f"dion_server={source.server.strip().lower()}")

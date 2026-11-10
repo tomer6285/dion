@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..platforms import prepare_config_directory
+
 from ..metadata.models import EpisodeItem, MediaItem, MediaType
 
 
@@ -39,14 +41,7 @@ class HistoryManager:
 
     def __init__(self, config_dir: Optional[Path] = None):
         if config_dir is None:
-            config_dir = Path.home() / ".config" / "dion"
-            old_config = Path.home() / ".config" / "dionysus"
-            if not config_dir.exists() and old_config.exists():
-                import shutil
-                try:
-                    shutil.copytree(old_config, config_dir)
-                except Exception:
-                    pass
+            config_dir = prepare_config_directory()
         self.config_dir = config_dir
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.history_file = self.config_dir / "history.json"

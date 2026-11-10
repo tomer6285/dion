@@ -520,13 +520,13 @@ class TestMpvStartupOptimizations(unittest.TestCase):
             self.assertEqual(sub_args[0], "--sub-file=https://sub.com/en.vtt")
 
             # Secondary subtitles saved to JSON for background Lua loading
-            sec_file = Path.home() / ".config" / "dion" / "secondary_subs.json"
-            if sec_file.exists():
-                data = json.loads(sec_file.read_text(encoding="utf-8"))
-                urls = [d["url"] for d in data]
-                self.assertIn("https://sub.com/ar.vtt", urls)
-                self.assertIn("https://sub.com/es.vtt", urls)
-                self.assertNotIn("https://sub.com/en.vtt", urls)
+            sec_file = self.config_dir / "secondary_subs.json"
+            self.assertTrue(sec_file.exists())
+            data = json.loads(sec_file.read_text(encoding="utf-8"))
+            urls = [d["url"] for d in data]
+            self.assertIn("https://sub.com/ar.vtt", urls)
+            self.assertIn("https://sub.com/es.vtt", urls)
+            self.assertNotIn("https://sub.com/en.vtt", urls)
 
 
 

@@ -298,7 +298,14 @@ class TestBatchSeasonDownloader(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.output_dir = Path(self.temp_dir.name)
-        self.downloader = StreamDownloader()
+        # Downloads and muxing are mocked below; tool detection must also be
+        # independent of which executables are installed on the test machine.
+        with patch(
+            "dion.player.downloader.shutil.which",
+            side_effect=lambda name: f"/mock/bin/{name}"
+            if name in {"yt-dlp", "ffmpeg"} else None,
+        ):
+            self.downloader = StreamDownloader()
 
     def tearDown(self):
         self.temp_dir.cleanup()

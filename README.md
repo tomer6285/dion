@@ -26,6 +26,7 @@
 - 🌐 **Multi-Provider Failover:** Automatic stream resolution across multi-server HLS (`.m3u8`) and MP4 sources with instant failover.
 - 🔒 **100% Direct HTTPS / No P2P:** All media is fetched via direct outbound client-to-server HTTP/HTTPS streams. Zero torrents, zero DHT swarms, and zero peer exposure.
 - 💬 **Subtitles & Live Sync:** Auto-fetches subtitles via OpenSubtitles and stream providers. Adjust and persist subtitle sync timing on-the-fly (`z` / `x`).
+- 📺 **Trakt.tv Integration:** Zero-config OAuth login, real-time background scrobbling, Trakt Watchlist browsing (`-w`), 60-day Continue Watching cross-device auto-merge, and two-way history sync.
 - ⏱️ **Smart Resume & History:** Remembers your exact playback position (saves every 5s, on pause, and on quit) and lets you pick up right where you left off (`-c`).
 - 🎬 **Multi-Player Support:** Built for [`mpv`](https://mpv.io/) with a custom Lua synchronization engine; also auto-detects and supports [IINA](https://iina.io/) and [VLC](https://www.videolan.org/).
 - ⚙️ **Interactive Settings Manager (`-S`):** Configure default player, subtitle preferences, auto-server selection, and download paths from a clean TUI menu.
@@ -216,6 +217,30 @@ removals during the current menu session, even after removing the last entry.
 Removal only hides the title from Continue Watching. Watch history and playback
 progress remain saved; playing the title again adds it back. This menu keeps
 fzf's fuzzy search when available, with questionary as the fallback.
+
+### 📺 Trakt.tv Integration
+Seamlessly scrobble what you watch, browse your watchlist, and sync continue watching across all your devices:
+```bash
+# Connect your Trakt.tv account (zero API keys required, simple browser code authorization)
+dion trakt login
+
+# Check connection and scrobbling status
+dion trakt status
+
+# Browse and stream or download directly from your Trakt Watchlist
+dion -w
+# (or)
+dion trakt watchlist
+
+# Two-way sync watch history between Dion and Trakt.tv
+dion trakt sync
+
+# Disconnect Trakt.tv
+dion trakt logout
+```
+- **Real-Time Scrobbling:** Playback starts and stops are sent to Trakt in the background. Reaching $\ge 80\%$ automatically marks the item as watched.
+- **60-Day Recency Auto-Merge:** When opening Continue Watching (`dion -c`), Dion automatically merges in-progress titles from Trakt paused in the last 60 days.
+- **Offline Downloads Isolated:** Downloading titles (`-d`) never scrobbles or alters your Trakt account.
 
 ### Settings Dashboard
 Configure default playback preferences with the built-in interactive menu:

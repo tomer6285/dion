@@ -20,6 +20,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "discord_client_id": "",  # custom Discord Application Client ID (optional override)
     "wyzie_api_key": "",  # Wyzie Subs API key (optional)
     "subdl_api_key": "",  # SubDL API key (optional)
+    "trakt_scrobble": True,  # whether Trakt real-time scrobbling is enabled
+    "trakt_client_id": "",  # custom Trakt client ID (optional override)
+    "trakt_client_secret": "",  # custom Trakt client secret (optional override)
 }
 
 
@@ -114,6 +117,20 @@ class SettingsManager:
     def subdl_api_key(self) -> str:
         val = str(self.get("subdl_api_key", "")).strip()
         return val or os.getenv("SUBDL_API_KEY", "").strip()
+
+    @property
+    def trakt_scrobble(self) -> bool:
+        return bool(self.get("trakt_scrobble", True))
+
+    @property
+    def trakt_client_id(self) -> str:
+        val = str(self.get("trakt_client_id", "")).strip()
+        return val or os.getenv("TRAKT_CLIENT_ID", "").strip()
+
+    @property
+    def trakt_client_secret(self) -> str:
+        val = str(self.get("trakt_client_secret", "")).strip()
+        return val or os.getenv("TRAKT_CLIENT_SECRET", "").strip()
 
     def resolve_player_executable(self) -> Optional[str]:
         """Resolves the executable path according to configured player preference."""

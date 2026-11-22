@@ -18,6 +18,7 @@ from .ui import (
     select_season,
     select_source,
     show_media_info,
+    wait_for_any_key,
 )
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from .player import MpvPlayer, StreamDownloader
     from .providers import ProviderManager
     from .storage import HistoryManager, SettingsManager
+    from .trakt import TraktAuthManager, TraktClient, TraktScrobbler, TraktSyncManager
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
@@ -42,6 +44,10 @@ _player: Optional[MpvPlayer] = None
 _downloader: Optional[StreamDownloader] = None
 _history_mgr: Optional[HistoryManager] = None
 _settings_mgr: Optional[SettingsManager] = None
+_trakt_client: Optional[TraktClient] = None
+_trakt_auth_mgr: Optional[TraktAuthManager] = None
+_trakt_scrobbler: Optional[TraktScrobbler] = None
+_trakt_sync_mgr: Optional[TraktSyncManager] = None
 
 
 def get_metadata_client() -> CinemetaClient:
@@ -92,6 +98,53 @@ def get_history_mgr() -> HistoryManager:
     return _history_mgr
 
 
+def get_trakt_client() -> TraktClient:
+    global _trakt_client
+    if _trakt_client is None:
+        from .trakt import TraktClient
+        s = get_settings_mgr()
+        _trakt_client = TraktClient(
+            client_id=s.trakt_client_id or None,
+            client_secret=s.trakt_client_secret or None,
+        )
+    return _trakt_client
+
+
+def get_trakt_auth_mgr() -> TraktAuthManager:
+    global _trakt_auth_mgr
+    if _trakt_auth_mgr is None:
+        from .trakt import TraktAuthManager
+        _trakt_auth_mgr = TraktAuthManager(
+            config_dir=get_settings_mgr().config_dir,
+            client=get_trakt_client(),
+        )
+    return _trakt_auth_mgr
+
+
+def get_trakt_scrobbler() -> TraktScrobbler:
+    global _trakt_scrobbler
+    if _trakt_scrobbler is None:
+        from .trakt import TraktScrobbler
+        s = get_settings_mgr()
+        _trakt_scrobbler = TraktScrobbler(
+            auth_mgr=get_trakt_auth_mgr(),
+            client=get_trakt_client(),
+            enabled=s.trakt_scrobble,
+        )
+    return _trakt_scrobbler
+
+
+def get_trakt_sync_mgr() -> TraktSyncManager:
+    global _trakt_sync_mgr
+    if _trakt_sync_mgr is None:
+        from .trakt import TraktSyncManager
+        _trakt_sync_mgr = TraktSyncManager(
+            auth_mgr=get_trakt_auth_mgr(),
+            client=get_trakt_client(),
+        )
+    return _trakt_sync_mgr
+
+
 def __getattr__(name: str):
     if name == "metadata_client":
         return get_metadata_client()
@@ -105,6 +158,14 @@ def __getattr__(name: str):
         return get_downloader()
     if name == "history_mgr":
         return get_history_mgr()
+    if name == "trakt_client":
+        return get_trakt_client()
+    if name == "trakt_auth_mgr":
+        return get_trakt_auth_mgr()
+    if name == "trakt_scrobbler":
+        return get_trakt_scrobbler()
+    if name == "trakt_sync_mgr":
+        return get_trakt_sync_mgr()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -212,6 +273,21 @@ def play_or_download(
                 rpc = DiscordRPC(client_id=settings_mgr.discord_client_id)
                 rpc.start_playback(media=media, episode=episode, start_time=start_time)
 
+            scrobbler = None
+            if not download and settings_mgr.trakt_scrobble and get_trakt_auth_mgr().is_authenticated():
+                scrobbler = get_trakt_scrobbler()
+                dur = history_mgr.get_playback_duration(
+                    media.imdb_id,
+                    season=episode.season if episode else None,
+                    episode=episode.episode if episode else None,
+                )
+                scrobbler.start_playback(
+                    media=media,
+                    episode=episode,
+                    start_time=start_time,
+                    duration=dur,
+                )
+
             try:
                 exit_code = get_player().play(
                     source=source,
@@ -223,6 +299,23 @@ def play_or_download(
             finally:
                 if rpc:
                     rpc.stop()
+                if scrobbler:
+                    final_pos = history_mgr.get_playback_position(
+                        media.imdb_id,
+                        season=episode.season if episode else None,
+                        episode=episode.episode if episode else None,
+                    )
+                    final_dur = history_mgr.get_playback_duration(
+                        media.imdb_id,
+                        season=episode.season if episode else None,
+                        episode=episode.episode if episode else None,
+                    )
+                    scrobbler.stop_playback(
+                        media=media,
+                        episode=episode,
+                        current_time=final_pos,
+                        duration=final_dur,
+                    )
 
             # Exit codes 0 (normal finish/quit), 4 (signal/VO quit), -2 (SIGINT), -15 (SIGTERM)
             # all indicate normal user quit or playback completion.
@@ -333,6 +426,14 @@ def interactive_settings_menu() -> None:
         custom_id_tag = f" [ID: {settings_mgr.discord_client_id}]" if settings_mgr.discord_client_id else ""
         rpc_desc = f"{rpc_status}{custom_id_tag}"
 
+        trakt_auth = get_trakt_auth_mgr()
+        is_trakt_auth = trakt_auth.is_authenticated()
+        trakt_user = trakt_auth.get_username() if is_trakt_auth else None
+        if is_trakt_auth:
+            trakt_desc = f"Connected (@{trakt_user})" if trakt_user else "Connected"
+        else:
+            trakt_desc = "Not Connected"
+
         console.print(
             Panel(
                 "[bold cyan]⚙️  Dion Settings[/bold cyan]\n"
@@ -351,6 +452,7 @@ def interactive_settings_menu() -> None:
             (f"📦 Download Container Format: {fmt_desc}", "download_format"),
             (f"🔄 Batch Download Concurrency: {conc_desc}", "download_concurrent"),
             (f"🎮 Discord Rich Presence (RPC): {rpc_desc}", "discord_rpc"),
+            (f"📺 Trakt.tv Integration: {trakt_desc}", "trakt"),
             ("↺ Reset all settings to defaults", "reset"),
             ("↩ Save & Exit", "exit"),
         ]
@@ -480,6 +582,55 @@ def interactive_settings_menu() -> None:
                 new_id = typer.prompt("Enter Discord Application Client ID (leave blank for default)", default=current).strip()
                 settings_mgr.set("discord_client_id", new_id)
 
+        elif action == "trakt":
+            console.clear()
+            trakt_auth = get_trakt_auth_mgr()
+            is_auth = trakt_auth.is_authenticated()
+            u = trakt_auth.get_username() if is_auth else None
+            user_label = f"Connected as @{u}" if u else "Connected"
+            scrobble_label = "Enabled" if settings_mgr.trakt_scrobble else "Disabled"
+
+            trakt_choices = []
+            if not is_auth:
+                trakt_choices.append(("🔑 Connect Trakt.tv Account (OAuth Device Code)", "login"))
+            else:
+                trakt_choices.append((f"⚡ Real-time Playback Scrobbling: {scrobble_label}", "toggle_scrobble"))
+                trakt_choices.append(("🔄 Sync Watchlist & Continue Watching Now", "sync"))
+                trakt_choices.append(("❌ Disconnect Trakt.tv Account", "logout"))
+            trakt_choices.append(("⚙️ Configure custom Client ID / Secret...", "custom_creds"))
+            trakt_choices.append(("↩ Back to Settings", "cancel"))
+
+            trakt_action = prompt_select(f"Trakt.tv Settings ({user_label if is_auth else 'Not Connected'})", trakt_choices)
+            if trakt_action == "login":
+                console.clear()
+                trakt_auth.login_interactive()
+                wait_for_any_key()
+            elif trakt_action == "logout":
+                console.clear()
+                confirm = typer.confirm("Disconnect your Trakt.tv account?")
+                if confirm:
+                    trakt_auth.logout()
+                    wait_for_any_key()
+            elif trakt_action == "toggle_scrobble":
+                settings_mgr.set("trakt_scrobble", not settings_mgr.trakt_scrobble)
+            elif trakt_action == "sync":
+                console.clear()
+                with console.status("[bold cyan]Syncing with Trakt.tv...[/bold cyan]"):
+                    pulled, pushed = get_trakt_sync_mgr().sync_history(get_history_mgr())
+                console.print(f"[bold green]✓ History sync complete:[/bold green] Pulled {pulled} titles, pushed {pushed} titles.")
+                wait_for_any_key()
+            elif trakt_action == "custom_creds":
+                console.clear()
+                cid = typer.prompt("Enter custom Trakt Client ID (leave blank for bundled default)", default=settings_mgr.trakt_client_id).strip()
+                csec = typer.prompt("Enter custom Trakt Client Secret (leave blank for bundled default)", default=settings_mgr.trakt_client_secret).strip()
+                settings_mgr.set("trakt_client_id", cid)
+                settings_mgr.set("trakt_client_secret", csec)
+                global _trakt_client, _trakt_auth_mgr, _trakt_scrobbler, _trakt_sync_mgr
+                _trakt_client = None
+                _trakt_auth_mgr = None
+                _trakt_scrobbler = None
+                _trakt_sync_mgr = None
+
         elif action == "reset":
             console.clear()
             confirm = typer.confirm("Reset all settings to default values?")
@@ -492,6 +643,9 @@ def interactive_settings_menu() -> None:
 def main(
     query: Optional[str] = typer.Argument(
         None, help="Movie or TV show title to search for."
+    ),
+    extra_args: Optional[list[str]] = typer.Argument(
+        None, help="Additional query terms or subcommand arguments."
     ),
     download: bool = typer.Option(
         False, "-d", "--download", help="Download the media instead of streaming."
@@ -538,6 +692,12 @@ def main(
     sub_delay: Optional[float] = typer.Option(
         None, "--sub-delay", help="Subtitle delay offset in seconds (e.g. 1.85 or -0.5)."
     ),
+    watchlist: bool = typer.Option(
+        False, "-w", "--watchlist", help="Browse and play or download from your Trakt.tv Watchlist."
+    ),
+    trakt_sync: bool = typer.Option(
+        False, "--trakt-sync", help="Synchronize watch history with Trakt.tv."
+    ),
 ):
     """Search, stream, and binge movies and TV shows directly in your terminal."""
     # 0. Handle settings menu
@@ -548,6 +708,65 @@ def main(
     metadata_client = get_metadata_client()
     history_mgr = get_history_mgr()
     settings_mgr = get_settings_mgr()
+
+    # Handle Trakt CLI subcommands (e.g. 'dion trakt login', 'dion trakt status', etc.)
+    if query and query.strip().lower() == "trakt":
+        trakt_sub = extra_args[0].lower() if extra_args else (sys.argv[2].lower() if len(sys.argv) > 2 else "")
+        trakt_auth = get_trakt_auth_mgr()
+        if trakt_sub in ("login", "auth"):
+            trakt_auth.login_interactive()
+            raise typer.Exit(0)
+        elif trakt_sub in ("logout", "disconnect"):
+            trakt_auth.logout()
+            raise typer.Exit(0)
+        elif trakt_sub in ("status", "whoami"):
+            is_auth = trakt_auth.is_authenticated()
+            user = trakt_auth.get_username() if is_auth else None
+            scrobble_st = "Enabled" if settings_mgr.trakt_scrobble else "Disabled"
+            status_msg = (
+                f"[bold green]Connected[/bold green] as [bold white]@{user}[/bold white]\n"
+                if is_auth
+                else "[bold yellow]Not connected[/bold yellow]\n"
+            )
+            status_msg += f"[dim]• Real-time Playback Scrobble:[/dim] {scrobble_st}\n"
+            status_msg += f"[dim]• Continue Watching 60d Sync:[/dim] {'Active' if is_auth else 'Inactive'}"
+            console.print(Panel(status_msg, title="[bold purple] 🍇 Trakt.tv Status [/bold purple]", border_style="cyan", expand=False))
+            raise typer.Exit(0)
+        elif trakt_sub == "sync":
+            if not trakt_auth.is_authenticated():
+                console.print("[yellow]Please connect to Trakt.tv first with 'dion trakt login'.[/yellow]")
+                raise typer.Exit(1)
+            with console.status("[bold cyan]Syncing with Trakt.tv...[/bold cyan]"):
+                pulled, pushed = get_trakt_sync_mgr().sync_history(history_mgr)
+            console.print(f"[bold green]✓ History sync complete:[/bold green] Pulled {pulled} titles, pushed {pushed} titles.")
+            raise typer.Exit(0)
+        elif trakt_sub in ("watchlist", "list"):
+            watchlist = True
+            query = None
+        else:
+            help_msg = (
+                "[bold cyan]🍇 Dion Trakt.tv Commands:[/bold cyan]\n\n"
+                "[bold white]dion trakt login[/bold white]       Log in using OAuth Device Code (no API keys needed)\n"
+                "[bold white]dion trakt logout[/bold white]      Disconnect your Trakt.tv account\n"
+                "[bold white]dion trakt status[/bold white]      Display Trakt connection and scrobble status\n"
+                "[bold white]dion trakt sync[/bold white]        Two-way sync watch history between Dion and Trakt\n"
+                "[bold white]dion trakt watchlist[/bold white]   Browse and stream/download from your Trakt Watchlist\n"
+                "[bold white]dion -w[/bold white]               Shortcut for Trakt Watchlist\n"
+            )
+            console.print(Panel(help_msg, title="[bold purple] Dion Trakt.tv Help [/bold purple]", border_style="cyan", expand=False))
+            raise typer.Exit(0)
+    elif query and extra_args:
+        query = f"{query} {' '.join(extra_args)}"
+
+    if trakt_sync:
+        trakt_auth = get_trakt_auth_mgr()
+        if not trakt_auth.is_authenticated():
+            console.print("[yellow]Please connect to Trakt.tv first with 'dion trakt login'.[/yellow]")
+            raise typer.Exit(1)
+        with console.status("[bold cyan]Syncing with Trakt.tv...[/bold cyan]"):
+            pulled, pushed = get_trakt_sync_mgr().sync_history(history_mgr)
+        console.print(f"[bold green]✓ History sync complete:[/bold green] Pulled {pulled} titles, pushed {pushed} titles.")
+        raise typer.Exit(0)
 
     if all_episodes or episode_range:
         download = True
@@ -566,13 +785,20 @@ def main(
         console.print("[bold green]✓ Watch history deleted successfully.[/bold green]")
         raise typer.Exit(0)
 
-    # 1. Handle continue watching & history selection
+    # 2. Handle continue watching & history selection
     if continue_watching or show_history:
         console.clear()
         items = (
             history_mgr.list_continue_watching() if continue_watching
             else history_mgr.list_history()
         )
+        if continue_watching and get_trakt_auth_mgr().is_authenticated():
+            with console.status("[bold cyan]Syncing continue watching with Trakt.tv (past 60 days)...[/bold cyan]"):
+                try:
+                    items = get_trakt_sync_mgr().merge_continue_watching(items, max_age_days=60)
+                except Exception:
+                    pass
+
         if not items:
             message = "No continue watching titles found." if continue_watching else "No watch history found."
             console.print(f"[yellow]{message}[/yellow]")
@@ -732,25 +958,51 @@ def main(
             )
             return
 
-    # 3. Interactive prompt if no query
-    if not query:
-        query = typer.prompt("🔍 Search movies & TV shows")
-        if not query.strip():
+    selected_media = None
+
+    if watchlist:
+        trakt_auth = get_trakt_auth_mgr()
+        if not trakt_auth.is_authenticated():
+            console.print("[yellow]You need to connect your Trakt.tv account first.[/yellow]")
+            if typer.confirm("Would you like to connect your Trakt account now?"):
+                if not trakt_auth.login_interactive():
+                    raise typer.Exit(1)
+            else:
+                raise typer.Exit(0)
+
+        with console.status("[bold cyan]Fetching your Trakt.tv Watchlist...[/bold cyan]"):
+            watchlist_items = get_trakt_sync_mgr().fetch_watchlist_media()
+
+        if not watchlist_items:
+            console.print("[yellow]Your Trakt.tv Watchlist is empty.[/yellow]")
+            raise typer.Exit(0)
+
+        console.clear()
+        selected_media = select_media(watchlist_items)
+        if not selected_media:
             return
+        console.clear()
 
-    # 4. Search metadata
-    with console.status(f"[bold cyan]Searching for '[bold white]{query}[/bold white]'...[/bold cyan]"):
-        results = metadata_client.search(query)
+    else:
+        # 3. Interactive prompt if no query
+        if not query:
+            query = typer.prompt("🔍 Search movies & TV shows")
+            if not query.strip():
+                return
 
-    if not results:
-        console.print(f"[bold red]No results found for '{query}'.[/bold red]")
-        raise typer.Exit(1)
+        # 4. Search metadata
+        with console.status(f"[bold cyan]Searching for '[bold white]{query}[/bold white]'...[/bold cyan]"):
+            results = metadata_client.search(query)
 
-    console.clear()
-    selected_media = select_media(results)
-    if not selected_media:
-        return
-    console.clear()
+        if not results:
+            console.print(f"[bold red]No results found for '{query}'.[/bold red]")
+            raise typer.Exit(1)
+
+        console.clear()
+        selected_media = select_media(results)
+        if not selected_media:
+            return
+        console.clear()
 
     # 5. Playback branch: Movie vs TV Show
     if selected_media.media_type == MediaType.MOVIE:

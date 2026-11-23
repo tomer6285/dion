@@ -698,9 +698,21 @@ def main(
     trakt_sync: bool = typer.Option(
         False, "--trakt-sync", help="Synchronize watch history with Trakt.tv."
     ),
+    update: bool = typer.Option(
+        False, "-U", "--update", help="Update Dion to the latest release."
+    ),
+    force_update: bool = typer.Option(
+        False, "--force-update", help="Force reinstall of latest release even if up to date."
+    ),
 ):
     """Search, stream, and binge movies and TV shows directly in your terminal."""
-    # 0. Handle settings menu
+    # 0. Handle self-update
+    if update or force_update:
+        from .updater import run_self_update
+        run_self_update(force=force_update)
+        raise typer.Exit(0)
+
+    # 1. Handle settings menu
     if settings:
         interactive_settings_menu()
         raise typer.Exit(0)

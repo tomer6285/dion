@@ -67,9 +67,9 @@ def detect_install_type() -> InstallType:
     if "pipx" in Path(sys.prefix).parts:
         return InstallType.PIPX
 
-    # 3. Source repository (editable or local git checkout)
+    # 3. Source repository (editable or local git checkout / worktree)
     dion_root = Path(__file__).resolve().parent.parent
-    if (dion_root / ".git").is_dir():
+    if (dion_root / ".git").exists():
         return InstallType.SOURCE
 
     # 4. Standard pip installation (venv or system python)
@@ -259,6 +259,21 @@ def _replace_binary(new_binary: Path, target_path: Path) -> None:
         except Exception:
             pass
         shutil.copy2(new_binary, target_path)
+
+        # If new_binary has sibling files or directories (PyInstaller onedir distribution)
+        source_dir = new_binary.parent
+        target_dir = target_path.parent
+        for item in source_dir.iterdir():
+            if item.name == new_binary.name:
+                continue
+            dest = target_dir / item.name
+            try:
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dest)
+            except Exception:
+                pass
     else:
         # On Unix, stage the new file in the target directory and use atomic rename
         temp_dest = target_path.with_name(f".{target_path.name}.new-{os.getpid()}")

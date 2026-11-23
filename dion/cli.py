@@ -695,8 +695,8 @@ def main(
     watchlist: bool = typer.Option(
         False, "-w", "--watchlist", help="Browse and play or download from your Trakt.tv Watchlist."
     ),
-    trakt_sync: bool = typer.Option(
-        False, "--trakt-sync", help="Synchronize watch history with Trakt.tv."
+    sync: bool = typer.Option(
+        False, "--sync", "--trakt-sync", help="Synchronize watch history with Trakt.tv."
     ),
     update: bool = typer.Option(
         False, "-U", "--update", help="Update Dion to the latest release."
@@ -762,6 +762,7 @@ def main(
                 "[bold white]dion trakt logout[/bold white]      Disconnect your Trakt.tv account\n"
                 "[bold white]dion trakt status[/bold white]      Display Trakt connection and scrobble status\n"
                 "[bold white]dion trakt sync[/bold white]        Two-way sync watch history between Dion and Trakt\n"
+                "[bold white]dion --sync[/bold white]            Shortcut to two-way sync complete watch history with Trakt\n"
                 "[bold white]dion trakt watchlist[/bold white]   Browse and stream/download from your Trakt Watchlist\n"
                 "[bold white]dion -w[/bold white]               Shortcut for Trakt Watchlist\n"
             )
@@ -770,7 +771,7 @@ def main(
     elif query and extra_args:
         query = f"{query} {' '.join(extra_args)}"
 
-    if trakt_sync:
+    if sync:
         trakt_auth = get_trakt_auth_mgr()
         if not trakt_auth.is_authenticated():
             console.print("[yellow]Please connect to Trakt.tv first with 'dion trakt login'.[/yellow]")

@@ -611,6 +611,191 @@ def test_cli_trakt_sync_command(tmp_path: Path, mock_token: TraktToken):
         assert "Pulled 3 titles, pushed 2 titles" in result.stdout
 
 
+def test_cli_sync_flag_authenticated(tmp_path: Path, mock_token: TraktToken):
+    """Verify 'dion --sync' triggers manual sync when authenticated."""
+    from typer.testing import CliRunner
+    from dion.cli import app
+
+    runner = CliRunner()
+    auth_mgr = TraktAuthManager(config_dir=tmp_path)
+    auth_mgr._save_token(mock_token)
+
+    with patch("dion.cli.get_trakt_auth_mgr", return_value=auth_mgr), \
+         patch("dion.cli.get_trakt_sync_mgr") as mock_sync_mgr:
+        mock_sync_mgr.return_value.sync_history.return_value = (4, 1)
+        result = runner.invoke(app, ["--sync"])
+        assert result.exit_code == 0
+        assert "Pulled 4 titles, pushed 1 titles" in result.stdout
+
+
+def test_cli_sync_flag_unauthenticated(tmp_path: Path):
+    """Verify 'dion --sync' exits with error code 1 when not authenticated."""
+    from typer.testing import CliRunner
+    from dion.cli import app
+
+    runner = CliRunner()
+    auth_mgr = TraktAuthManager(config_dir=tmp_path)
+
+    with patch("dion.cli.get_trakt_auth_mgr", return_value=auth_mgr):
+        result = runner.invoke(app, ["--sync"])
+        assert result.exit_code == 1
+        assert "Please connect to Trakt.tv first" in result.stdout
+
+
+def test_cli_trakt_sync_flag_alias(tmp_path: Path, mock_token: TraktToken):
+    """Verify 'dion --trakt-sync' works as an alias for '--sync'."""
+    from typer.testing import CliRunner
+    from dion.cli import app
+
+    runner = CliRunner()
+    auth_mgr = TraktAuthManager(config_dir=tmp_path)
+    auth_mgr._save_token(mock_token)
+
+    with patch("dion.cli.get_trakt_auth_mgr", return_value=auth_mgr), \
+         patch("dion.cli.get_trakt_sync_mgr") as mock_sync_mgr:
+        mock_sync_mgr.return_value.sync_history.return_value = (2, 0)
+        result = runner.invoke(app, ["--trakt-sync"])
+        assert result.exit_code == 0
+        assert "Pulled 2 titles, pushed 0 titles" in result.stdout
+
+
+def test_login_interactive_triggers_auto_sync(tmp_path: Path, mock_token: TraktToken):
+    """Verify connecting account via login_interactive automatically synchronizes complete history."""
+    auth_mgr = TraktAuthManager(config_dir=tmp_path)
+
+    mock_device = TraktDeviceCode(
+        device_code="dev_code_123",
+        user_code="CODE123",
+        verification_url="https://trakt.tv/activate",
+        expires_in=600,
+        interval=1,
+    )
+
+    with patch.object(auth_mgr.client, "request_device_code", return_value=mock_device), \
+         patch.object(auth_mgr.client, "poll_device_token", return_value=(mock_token, "success")), \
+         patch.object(auth_mgr.client, "get_user_profile", return_value={"username": "testuser"}), \
+         patch("dion.trakt.sync.TraktSyncManager.sync_history", return_value=(5, 2)) as mock_sync:
+
+        success = auth_mgr.login_interactive(auto_sync=True)
+        assert success is True
+        assert auth_mgr.is_authenticated()
+        assert auth_mgr.get_username() == "testuser"
+        assert mock_sync.called
+
+
+def test_login_interactive_auto_sync_failure_graceful(tmp_path: Path, mock_token: TraktToken):
+    """Verify login still succeeds if auto-sync encounters an exception."""
+    auth_mgr = TraktAuthManager(config_dir=tmp_path)
+
+    mock_device = TraktDeviceCode(
+        device_code="dev_code_123",
+        user_code="CODE123",
+        verification_url="https://trakt.tv/activate",
+        expires_in=600,
+        interval=1,
+    )
+
+    with patch.object(auth_mgr.client, "request_device_code", return_value=mock_device), \
+         patch.object(auth_mgr.client, "poll_device_token", return_value=(mock_token, "success")), \
+         patch.object(auth_mgr.client, "get_user_profile", return_value={"username": "testuser"}), \
+         patch("dion.trakt.sync.TraktSyncManager.sync_history", side_effect=RuntimeError("Network error")):
+
+        success = auth_mgr.login_interactive(auto_sync=True)
+        assert success is True
+        assert auth_mgr.is_authenticated()
+
+
+def test_client_get_history_complete_pagination():
+    """Verify TraktClient.get_history(token, limit=None) paginates through all pages."""
+    client = TraktClient()
+
+    p1_items = [{"id": 1, "type": "movie", "movie": {"title": "M1", "ids": {"imdb": "tt1"}}}]
+    p2_items = [{"id": 2, "type": "movie", "movie": {"title": "M2", "ids": {"imdb": "tt2"}}}]
+
+    responses = [
+        httpx.Response(200, json=p1_items, headers={"X-Pagination-Page-Count": "2"}),
+        httpx.Response(200, json=p2_items, headers={"X-Pagination-Page-Count": "2"}),
+    ]
+
+    with patch("httpx.Client.get", side_effect=responses) as mock_get:
+        all_history = client.get_history("test_token", limit=None)
+        assert len(all_history) == 2
+        assert all_history[0]["id"] == 1
+        assert all_history[1]["id"] == 2
+        assert mock_get.call_count == 2
+
+
+def test_sync_history_with_episodes_and_recency_update(tmp_path: Path, mock_token: TraktToken):
+    """Verify complete two-way history sync updates existing titles when Trakt is newer."""
+    auth_mgr = TraktAuthManager(config_dir=tmp_path)
+    auth_mgr._save_token(mock_token)
+    sync_mgr = TraktSyncManager(auth_mgr=auth_mgr)
+    history_mgr = HistoryManager(config_dir=tmp_path)
+
+    # Local has Series at S01E01 (older)
+    history_mgr.record_watch(
+        media=MediaItem(id="ttShow1", imdb_id="ttShow1", title="Test Show", media_type=MediaType.SERIES),
+        episode=EpisodeItem(id="ttShow1:1:1", season=1, episode=1, title="Ep 1"),
+        playback_position=0.0,
+        last_watched="2024-01-01T00:00:00Z",
+    )
+    # Local also has a local-only movie to push
+    history_mgr.record_watch(
+        media=MediaItem(id="ttLocalMovie", imdb_id="ttLocalMovie", title="Local Movie", media_type=MediaType.MOVIE),
+        playback_position=0.0,
+        last_watched="2024-01-05T00:00:00Z",
+    )
+
+    # Trakt has Series at S01E05 (newer!) and a new Movie
+    mock_trakt_history = [
+        {
+            "id": 201,
+            "type": "episode",
+            "watched_at": "2024-01-10T00:00:00Z",
+            "show": {"title": "Test Show", "ids": {"imdb": "ttShow1"}},
+            "episode": {"season": 1, "number": 5, "title": "Ep 5"},
+        },
+        {
+            "id": 202,
+            "type": "movie",
+            "watched_at": "2024-01-08T00:00:00Z",
+            "movie": {"title": "Trakt Movie", "ids": {"imdb": "ttTraktMovie"}},
+        },
+    ]
+
+    with patch.object(sync_mgr.client, "get_history", return_value=mock_trakt_history), \
+         patch.object(sync_mgr.client, "add_to_history", return_value={"added": {"movies": 1, "shows": 0, "episodes": 0}}) as mock_push:
+
+        pulled, pushed = sync_mgr.sync_history(history_mgr)
+        # Pulled: ttShow1 updated to S01E05 + ttTraktMovie added = 2
+        assert pulled == 2
+        # Pushed: ttLocalMovie pushed to Trakt = 1
+        assert pushed == 1
+        assert mock_push.called
+
+        # Verify ttShow1 was updated to S01E05
+        local_items = history_mgr.list_history(limit=None)
+        local_map = {i["imdb_id"]: i for i in local_items}
+        assert local_map["ttShow1"]["season"] == 1
+        assert local_map["ttShow1"]["episode"] == 5
+        assert "ttTraktMovie" in local_map
+        assert "ttLocalMovie" in local_map
+
+
+def test_history_manager_list_history_all(tmp_path: Path):
+    """Verify list_history(limit=None) returns all items regardless of default limit."""
+    history_mgr = HistoryManager(config_dir=tmp_path)
+    for i in range(25):
+        history_mgr.record_watch(
+            MediaItem(id=f"tt{i}", imdb_id=f"tt{i}", title=f"Title {i}", media_type=MediaType.MOVIE)
+        )
+
+    # Default limit should be 15
+    assert len(history_mgr.list_history()) == 15
+    # limit=None should return all 25 items
+    assert len(history_mgr.list_history(limit=None)) == 25
+
+
 def test_cli_trakt_logout_command(tmp_path: Path, mock_token: TraktToken):
     from typer.testing import CliRunner
     from dion.cli import app

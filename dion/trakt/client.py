@@ -268,17 +268,57 @@ class TraktClient:
             logger.warning("Failed to fetch Trakt watchlist: %s", e)
         return results
 
-    def get_history(self, token: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """Retrieve user's watched history from Trakt."""
-        url = f"{self.BASE_URL}/sync/history?limit={limit}&extended=full"
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.get(url, headers=self._headers(token))
-                if resp.status_code == 200:
-                    return resp.json()
-        except Exception as e:
-            logger.warning("Failed to fetch Trakt history: %s", e)
-        return []
+    def get_history(
+        self,
+        token: str,
+        limit: Optional[int] = 50,
+        page: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve user's watched history from Trakt.
+
+        If limit is None, fetches complete history across all pages.
+        """
+        if limit is not None:
+            url = f"{self.BASE_URL}/sync/history?page={page}&limit={limit}&extended=full"
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    resp = client.get(url, headers=self._headers(token))
+                    if resp.status_code == 200:
+                        return resp.json()
+            except Exception as e:
+                logger.warning("Failed to fetch Trakt history: %s", e)
+            return []
+
+        # Complete history across all pages
+        results: List[Dict[str, Any]] = []
+        current_page = 1
+        page_size = 100
+        while True:
+            url = f"{self.BASE_URL}/sync/history?page={current_page}&limit={page_size}&extended=full"
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    resp = client.get(url, headers=self._headers(token))
+                    if resp.status_code != 200:
+                        break
+                    items = resp.json()
+                    if not items or not isinstance(items, list):
+                        break
+                    results.extend(items)
+                    page_count_header = resp.headers.get("X-Pagination-Page-Count")
+                    if page_count_header:
+                        try:
+                            if current_page >= int(page_count_header):
+                                break
+                        except ValueError:
+                            if len(items) < page_size:
+                                break
+                    elif len(items) < page_size:
+                        break
+                    current_page += 1
+            except Exception as e:
+                logger.warning("Failed to fetch Trakt history page %d: %s", current_page, e)
+                break
+        return results
 
     def add_to_history(self, token: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Mark items as watched in Trakt history."""

@@ -221,7 +221,7 @@ fzf's fuzzy search when available, with questionary as the fallback.
 ### 📺 Trakt.tv Integration
 Seamlessly scrobble what you watch, browse your watchlist, and sync continue watching across all your devices:
 ```bash
-# Connect your Trakt.tv account (zero API keys required, simple browser code authorization)
+# Connect your Trakt.tv account (automatically syncs complete history between Dion and Trakt)
 dion trakt login
 
 # Check connection and scrobbling status
@@ -232,12 +232,15 @@ dion -w
 # (or)
 dion trakt watchlist
 
-# Two-way sync watch history between Dion and Trakt.tv
+# Manually two-way sync complete watch history between Dion and Trakt.tv
+dion --sync
+# (or)
 dion trakt sync
 
 # Disconnect Trakt.tv
 dion trakt logout
 ```
+- **Automatic History Sync:** Connecting your Trakt.tv account automatically performs a complete two-way sync of your watch history between Dion and Trakt. You can also manually trigger a sync anytime with `dion --sync`.
 - **Real-Time Scrobbling:** Playback starts and stops are sent to Trakt in the background. Reaching $\ge 80\%$ automatically marks the item as watched.
 - **60-Day Recency Auto-Merge:** When opening Continue Watching (`dion -c`), Dion automatically merges in-progress titles from Trakt paused in the last 60 days.
 - **Offline Downloads Isolated:** Downloading titles (`-d`) never scrobbles or alters your Trakt account.

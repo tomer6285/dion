@@ -243,6 +243,8 @@ class HistoryManager:
         playback_position: Optional[float] = None,
         duration: Optional[float] = None,
         restore_continue: bool = True,
+        last_watched: Optional[str] = None,
+        save: bool = True,
     ) -> None:
         """Save or update an entry in the watch history."""
         items: List[Dict[str, Any]] = self._data.get("items", [])
@@ -274,7 +276,7 @@ class HistoryManager:
             "title": media.title,
             "media_type": media.media_type.value,
             "year": media.year,
-            "last_watched": datetime.now().isoformat(),
+            "last_watched": last_watched or datetime.now().isoformat(),
             "position": playback_position,
         }
 
@@ -287,12 +289,12 @@ class HistoryManager:
             entry["episode_title"] = episode.title
 
         items.insert(0, entry)
-        # Keep last 50 entries
-        self._data["items"] = items[:50]
+        self._data["items"] = items
         if restore_continue:
             hidden = self._data.get("hidden_from_continue", [])
             self._data["hidden_from_continue"] = [key for key in hidden if key != media.imdb_id]
-        self._save()
+        if save:
+            self._save()
 
     def populate_missing_durations(
         self,
@@ -359,10 +361,13 @@ class HistoryManager:
         items = self._data.get("items", [])
         return items[0] if items else None
 
-    def list_history(self, limit: int = 15) -> List[Dict[str, Any]]:
+    def list_history(self, limit: Optional[int] = 15) -> List[Dict[str, Any]]:
         """Return recent watch history with up-to-date resume positions."""
         self._sync_positions()
-        return self._data.get("items", [])[:limit]
+        items = self._data.get("items", [])
+        if limit is None:
+            return list(items)
+        return items[:limit]
 
     def list_continue_watching(self, limit: int = 15) -> List[Dict[str, Any]]:
         """Filter hidden titles before applying the display limit."""

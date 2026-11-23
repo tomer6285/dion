@@ -63,6 +63,16 @@ if [ ! -x "$APP_BIN" ]; then
     tail -n "+$PAYLOAD_LINE" "$0" | tar -xzf - -C "$CACHE_DIR"
 fi
 
+if [ -z "$DION_STANDALONE_BINARY" ]; then
+    if command -v realpath >/dev/null 2>&1; then
+        export DION_STANDALONE_BINARY="$(realpath "$0")"
+    elif command -v readlink >/dev/null 2>&1; then
+        export DION_STANDALONE_BINARY="$(readlink -f "$0" 2>/dev/null || command -v "$0" || echo "$0")"
+    else
+        export DION_STANDALONE_BINARY="$(command -v "$0" 2>/dev/null || echo "$0")"
+    fi
+fi
+
 exec "$APP_BIN" "$@"
 __PAYLOAD_BELOW__
 EOF

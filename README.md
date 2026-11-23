@@ -303,6 +303,18 @@ dion "Inception" --sub-delay 1.85
 dion "The Matrix" --sub-delay -0.5
 ```
 
+### Self-Updating
+Dion supports automatic self-updating for both pipx-managed and standalone binary installations:
+```bash
+# Check for and install the latest release
+dion -U
+# (or)
+dion --update
+
+# Force reinstallation of the latest release even if already up to date
+dion -U --force-update
+```
+
 ---
 
 ## 📖 CLI Reference
@@ -329,6 +341,8 @@ Options:
   -d, --download            Download the media instead of streaming.
   -o, --output <path>       Output directory for downloads (default: ~/Downloads).
       --sub-delay <float>   Subtitle delay offset in seconds (e.g. 1.85 or -0.5).
+  -U, --update              Update Dion to the latest release (pipx or standalone).
+      --force-update        Force reinstall of latest release even if up to date.
   -h, --help                Show this message and exit.
 ```
 

@@ -179,3 +179,23 @@ class TestCliUpdateFlag(unittest.TestCase):
         result = runner.invoke(app, ["-U"])
         self.assertEqual(result.exit_code, 0)
         mock_run_self_update.assert_called_once_with(force=False)
+
+    @patch("dion.updater.run_self_update")
+    def test_cli_update_long_flag_invokes_updater(self, mock_run_self_update):
+        from typer.testing import CliRunner
+        from dion.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["--update"])
+        self.assertEqual(result.exit_code, 0)
+        mock_run_self_update.assert_called_once_with(force=False)
+
+    @patch("dion.updater.run_self_update")
+    def test_cli_force_update_flag_invokes_updater(self, mock_run_self_update):
+        from typer.testing import CliRunner
+        from dion.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["-U", "--force-update"])
+        self.assertEqual(result.exit_code, 0)
+        mock_run_self_update.assert_called_once_with(force=True)

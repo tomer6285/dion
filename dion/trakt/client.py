@@ -14,13 +14,8 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-# Default Dion Application credentials registered for Dion CLI on Trakt.tv
-DEFAULT_TRAKT_CLIENT_ID = (
-    "086307481ba920e5c9a6a86e088ba76b2ce74895fa7b049615dfa978eb33383a"
-)
-DEFAULT_TRAKT_CLIENT_SECRET = (
-    "df208579d4681f9a2ba186c3da9823901b8bdfb13682beaf4117b9b7835848bb"
-)
+# Default Dion Application Client ID registered for Dion on Trakt.tv (public client)
+DEFAULT_TRAKT_CLIENT_ID = "LUiYexjudpqu7Tl7kf7ZRWA2bMLnWrdwfhjSF8eao_U"
 
 
 class TraktClient:
@@ -42,7 +37,7 @@ class TraktClient:
         self.client_secret = (
             client_secret
             or os.environ.get("TRAKT_CLIENT_SECRET")
-            or DEFAULT_TRAKT_CLIENT_SECRET
+            or ""
         ).strip()
         self.timeout = timeout
 
@@ -63,7 +58,13 @@ class TraktClient:
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(url, json=payload, headers=self._headers())
             if resp.status_code != 200:
-                raise RuntimeError(f"Trakt device code request failed: HTTP {resp.status_code}")
+                err_desc = ""
+                try:
+                    data = resp.json()
+                    err_desc = f": {data.get('error_description') or data.get('error')}"
+                except Exception:
+                    pass
+                raise RuntimeError(f"Trakt device code request failed: HTTP {resp.status_code}{err_desc}")
             data = resp.json()
             return TraktDeviceCode(
                 device_code=data["device_code"],
@@ -76,11 +77,12 @@ class TraktClient:
     def poll_device_token(self, device_code: str) -> tuple[Optional[TraktToken], str]:
         """Poll for token. Returns (token, status_string)."""
         url = f"{self.BASE_URL}/oauth/device/token"
-        payload = {
+        payload: Dict[str, Any] = {
             "code": device_code,
             "client_id": self.client_id,
-            "client_secret": self.client_secret,
         }
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(url, json=payload, headers=self._headers())
             if resp.status_code == 200:
@@ -112,13 +114,14 @@ class TraktClient:
     def refresh_token(self, refresh_token: str) -> Optional[TraktToken]:
         """Refresh expired OAuth token."""
         url = f"{self.BASE_URL}/oauth/token"
-        payload = {
+        payload: Dict[str, Any] = {
             "refresh_token": refresh_token,
             "client_id": self.client_id,
-            "client_secret": self.client_secret,
             "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
             "grant_type": "refresh_token",
         }
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 resp = client.post(url, json=payload, headers=self._headers())
@@ -139,11 +142,12 @@ class TraktClient:
     def revoke_token(self, token: str) -> bool:
         """Revoke an active OAuth access token on logout."""
         url = f"{self.BASE_URL}/oauth/revoke"
-        payload = {
+        payload: Dict[str, Any] = {
             "token": token,
             "client_id": self.client_id,
-            "client_secret": self.client_secret,
         }
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 resp = client.post(url, json=payload, headers=self._headers())

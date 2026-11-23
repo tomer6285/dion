@@ -597,7 +597,7 @@ def interactive_settings_menu() -> None:
                 trakt_choices.append((f"⚡ Real-time Playback Scrobbling: {scrobble_label}", "toggle_scrobble"))
                 trakt_choices.append(("🔄 Sync Watchlist & Continue Watching Now", "sync"))
                 trakt_choices.append(("❌ Disconnect Trakt.tv Account", "logout"))
-            trakt_choices.append(("⚙️ Configure custom Client ID / Secret...", "custom_creds"))
+            trakt_choices.append(("⚙️ Configure custom Client ID...", "custom_creds"))
             trakt_choices.append(("↩ Back to Settings", "cancel"))
 
             trakt_action = prompt_select(f"Trakt.tv Settings ({user_label if is_auth else 'Not Connected'})", trakt_choices)
@@ -622,7 +622,7 @@ def interactive_settings_menu() -> None:
             elif trakt_action == "custom_creds":
                 console.clear()
                 cid = typer.prompt("Enter custom Trakt Client ID (leave blank for bundled default)", default=settings_mgr.trakt_client_id).strip()
-                csec = typer.prompt("Enter custom Trakt Client Secret (leave blank for bundled default)", default=settings_mgr.trakt_client_secret).strip()
+                csec = typer.prompt("Enter custom Trakt Client Secret (optional, leave blank for secret-less)", default=settings_mgr.trakt_client_secret).strip()
                 settings_mgr.set("trakt_client_id", cid)
                 settings_mgr.set("trakt_client_secret", csec)
                 global _trakt_client, _trakt_auth_mgr, _trakt_scrobbler, _trakt_sync_mgr

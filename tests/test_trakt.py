@@ -124,6 +124,8 @@ def test_format_trakt_scrobble_payload_bounds(sample_movie: MediaItem):
 
 def test_client_request_device_code():
     client = TraktClient()
+    assert client.client_id == "LUiYexjudpqu7Tl7kf7ZRWA2bMLnWrdwfhjSF8eao_U"
+    assert client.client_secret == ""
     mock_resp = {
         "device_code": "dev123",
         "user_code": "WDGLPBMQ",
@@ -143,6 +145,39 @@ def test_client_request_device_code():
         assert code.verification_url == "https://trakt.tv/activate"
         assert code.expires_in == 600
         assert code.interval == 5
+
+
+def test_client_secretless_poll_and_refresh_payload():
+    client = TraktClient()
+    with patch("httpx.Client.post") as mock_post:
+        mock_post.return_value = httpx.Response(400)
+        client.poll_device_token("dev123")
+        call_json = mock_post.call_args.kwargs["json"]
+        assert "client_secret" not in call_json
+        assert call_json["code"] == "dev123"
+        assert call_json["client_id"] == client.client_id
+
+        # Refresh token without secret
+        mock_post.return_value = httpx.Response(400)
+        client.refresh_token("ref123")
+        refresh_json = mock_post.call_args.kwargs["json"]
+        assert "client_secret" not in refresh_json
+        assert refresh_json["refresh_token"] == "ref123"
+        assert refresh_json["client_id"] == client.client_id
+
+
+def test_client_with_custom_secret_payload():
+    client = TraktClient(client_secret="custom_secret_123")
+    with patch("httpx.Client.post") as mock_post:
+        mock_post.return_value = httpx.Response(400)
+        client.poll_device_token("dev123")
+        call_json = mock_post.call_args.kwargs["json"]
+        assert call_json.get("client_secret") == "custom_secret_123"
+
+        mock_post.return_value = httpx.Response(400)
+        client.refresh_token("ref123")
+        refresh_json = mock_post.call_args.kwargs["json"]
+        assert refresh_json.get("client_secret") == "custom_secret_123"
 
 
 # ---------------------------------------------------------------------------

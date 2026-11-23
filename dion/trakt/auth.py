@@ -94,7 +94,7 @@ class TraktAuthManager:
 
         return self._token.access_token
 
-    def login_interactive(self) -> bool:
+    def login_interactive(self, auto_sync: bool = True) -> bool:
         """Run interactive OAuth Device Code authorization in terminal."""
         console.print("[bold cyan]Connecting to Trakt.tv...[/bold cyan]")
         try:
@@ -119,6 +119,7 @@ class TraktAuthManager:
 
         interval = max(1, device.interval)
         deadline = time.time() + device.expires_in
+        authenticated = False
 
         with console.status("[bold cyan]Waiting for Trakt authorization in browser...[/bold cyan]") as status:
             while time.time() < deadline:
@@ -130,9 +131,8 @@ class TraktAuthManager:
                     if profile and "username" in profile:
                         token.username = profile["username"]
                     self._save_token(token)
-                    user_tag = f" as [bold white]@{token.username}[/bold white]" if token.username else ""
-                    console.print(f"[bold green]✓ Successfully connected to Trakt.tv{user_tag}![/bold green]")
-                    return True
+                    authenticated = True
+                    break
                 elif state == "pending":
                     continue
                 elif state == "slow_down":
@@ -144,8 +144,30 @@ class TraktAuthManager:
                 else:
                     status.update(f"[yellow]Retrying authorization... ({state})[/yellow]")
 
-        console.print("[bold red]✕ Device authorization timed out. Please try again.[/bold red]")
-        return False
+        if not authenticated:
+            console.print("[bold red]✕ Device authorization timed out. Please try again.[/bold red]")
+            return False
+
+        user_tag = f" as [bold white]@{self._token.username}[/bold white]" if (self._token and self._token.username) else ""
+        console.print(f"[bold green]✓ Successfully connected to Trakt.tv{user_tag}![/bold green]")
+
+        if auto_sync:
+            try:
+                from .sync import TraktSyncManager
+                from ..storage.history import HistoryManager
+
+                sync_mgr = TraktSyncManager(auth_mgr=self, client=self.client)
+                history_mgr = HistoryManager(config_dir=self.config_dir)
+                with console.status("[bold cyan]Syncing complete history with Trakt.tv...[/bold cyan]"):
+                    pulled, pushed = sync_mgr.sync_history(history_mgr)
+                console.print(
+                    f"[bold green]✓ History sync complete:[/bold green] Pulled {pulled} titles, pushed {pushed} titles."
+                )
+            except Exception as e:
+                logger.warning("Automatic history sync after login failed: %s", e)
+                console.print(f"[yellow]⚠️ Could not automatically sync history: {e}[/yellow]")
+
+        return True
 
     def logout(self) -> bool:
         """Disconnect and revoke Trakt credentials."""

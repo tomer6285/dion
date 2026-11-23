@@ -229,7 +229,7 @@ class TraktSyncManager:
         return media_list
 
     def sync_history(self, history_mgr: HistoryManager) -> Tuple[int, int]:
-        """Two-way history sync: pulls from Trakt and pushes local history.
+        """Two-way history sync: pulls complete history from Trakt and pushes local history.
 
         Returns (pulled_count, pushed_count).
         """
@@ -240,10 +240,13 @@ class TraktSyncManager:
         pulled_count = 0
         pushed_count = 0
 
-        # 1. Pull recent Trakt history into Dion
-        trakt_history = self.client.get_history(token, limit=50)
-        local_history = history_mgr.list_history()
+        # 1. Pull complete Trakt history into Dion
+        trakt_history = self.client.get_history(token, limit=None)
+        local_history = history_mgr.list_history(limit=None)
         local_imdb_keys = {item.get("imdb_id") for item in local_history if item.get("imdb_id")}
+        local_map: Dict[str, Dict[str, Any]] = {
+            item.get("imdb_id"): item for item in local_history if item.get("imdb_id")
+        }
 
         for h in trakt_history:
             h_type = h.get("type")
@@ -251,7 +254,9 @@ class TraktSyncManager:
             if h_type == "movie":
                 m = h.get("movie", {})
                 imdb_id = m.get("ids", {}).get("imdb")
-                if imdb_id and imdb_id not in local_imdb_keys:
+                if not imdb_id:
+                    continue
+                if imdb_id not in local_imdb_keys:
                     history_mgr.record_watch(
                         media=MediaItem(
                             id=imdb_id,
@@ -261,14 +266,45 @@ class TraktSyncManager:
                             year=str(m.get("year")) if m.get("year") else None,
                         ),
                         playback_position=0.0,
+                        last_watched=watched_at,
+                        save=False,
                     )
                     local_imdb_keys.add(imdb_id)
+                    local_map[imdb_id] = {
+                        "imdb_id": imdb_id,
+                        "title": m.get("title", "Unknown"),
+                        "media_type": MediaType.MOVIE.value,
+                        "last_watched": watched_at,
+                    }
                     pulled_count += 1
+                else:
+                    loc = local_map[imdb_id]
+                    t_dt = parse_iso_datetime(watched_at)
+                    loc_dt = parse_iso_datetime(loc.get("last_watched"))
+                    if t_dt and loc_dt and t_dt > loc_dt:
+                        loc["last_watched"] = watched_at
+                        history_mgr.record_watch(
+                            media=MediaItem(
+                                id=imdb_id,
+                                imdb_id=imdb_id,
+                                title=m.get("title", loc.get("title", "Unknown")),
+                                media_type=MediaType.MOVIE,
+                                year=str(m.get("year")) if m.get("year") else loc.get("year"),
+                            ),
+                            playback_position=0.0,
+                            last_watched=watched_at,
+                            save=False,
+                        )
+                        pulled_count += 1
             elif h_type == "episode":
                 show = h.get("show", {})
                 ep = h.get("episode", {})
                 imdb_id = show.get("ids", {}).get("imdb")
-                if imdb_id and imdb_id not in local_imdb_keys:
+                if not imdb_id:
+                    continue
+                s_num = ep.get("season", 1)
+                e_num = ep.get("number", 1)
+                if imdb_id not in local_imdb_keys:
                     history_mgr.record_watch(
                         media=MediaItem(
                             id=imdb_id,
@@ -278,35 +314,96 @@ class TraktSyncManager:
                             year=str(show.get("year")) if show.get("year") else None,
                         ),
                         episode=EpisodeItem(
-                            id=f"{imdb_id}:{ep.get('season')}:{ep.get('number')}",
-                            season=ep.get("season", 1),
-                            episode=ep.get("number", 1),
-                            title=ep.get("title") or f"Episode {ep.get('number')}",
+                            id=f"{imdb_id}:{s_num}:{e_num}",
+                            season=s_num,
+                            episode=e_num,
+                            title=ep.get("title") or f"Episode {e_num}",
                         ),
                         playback_position=0.0,
+                        last_watched=watched_at,
+                        save=False,
                     )
                     local_imdb_keys.add(imdb_id)
+                    local_map[imdb_id] = {
+                        "imdb_id": imdb_id,
+                        "title": show.get("title", "Unknown"),
+                        "media_type": MediaType.SERIES.value,
+                        "season": s_num,
+                        "episode": e_num,
+                        "last_watched": watched_at,
+                    }
                     pulled_count += 1
+                else:
+                    loc = local_map[imdb_id]
+                    t_dt = parse_iso_datetime(watched_at)
+                    loc_dt = parse_iso_datetime(loc.get("last_watched"))
+                    if t_dt and loc_dt and t_dt > loc_dt:
+                        history_mgr.record_watch(
+                            media=MediaItem(
+                                id=imdb_id,
+                                imdb_id=imdb_id,
+                                title=show.get("title", loc.get("title", "Unknown")),
+                                media_type=MediaType.SERIES,
+                                year=str(show.get("year")) if show.get("year") else loc.get("year"),
+                            ),
+                            episode=EpisodeItem(
+                                id=f"{imdb_id}:{s_num}:{e_num}",
+                                season=s_num,
+                                episode=e_num,
+                                title=ep.get("title") or f"Episode {e_num}",
+                            ),
+                            playback_position=0.0,
+                            last_watched=watched_at,
+                            save=False,
+                        )
+                        loc["season"] = s_num
+                        loc["episode"] = e_num
+                        loc["last_watched"] = watched_at
+                        pulled_count += 1
+
+        if pulled_count > 0:
+            def get_sort_key(item: Dict[str, Any]) -> datetime:
+                dt = parse_iso_datetime(item.get("last_watched"))
+                return dt if dt else datetime.min.replace(tzinfo=timezone.utc)
+
+            history_mgr._data.get("items", []).sort(key=get_sort_key, reverse=True)
+            history_mgr._save()
 
         # 2. Push local watched items to Trakt
-        trakt_imdb_keys = set()
+        trakt_movie_keys = set()
+        trakt_episode_keys = set()
         for h in trakt_history:
-            t_obj = h.get("movie") or h.get("show")
-            if t_obj:
-                imdb = t_obj.get("ids", {}).get("imdb")
+            h_type = h.get("type")
+            if h_type == "movie":
+                m = h.get("movie", {})
+                imdb = m.get("ids", {}).get("imdb")
                 if imdb:
-                    trakt_imdb_keys.add(imdb)
+                    trakt_movie_keys.add(imdb)
+            elif h_type == "episode":
+                show = h.get("show", {})
+                ep = h.get("episode", {})
+                s_imdb = show.get("ids", {}).get("imdb")
+                s_num = ep.get("season")
+                e_num = ep.get("number")
+                if s_imdb and s_num is not None and e_num is not None:
+                    trakt_episode_keys.add((s_imdb, s_num, e_num))
+                elif s_imdb:
+                    trakt_episode_keys.add((s_imdb, None, None))
 
         movies_to_push = []
+        shows_to_push: Dict[str, Any] = {}
         episodes_to_push = []
 
-        for loc in local_history:
+        current_local = history_mgr.list_history(limit=None)
+        for loc in current_local:
             imdb_id = loc.get("imdb_id")
-            if not imdb_id or imdb_id in trakt_imdb_keys:
+            if not imdb_id:
                 continue
 
             m_type = loc.get("media_type")
             if m_type == MediaType.MOVIE.value:
+                if imdb_id in trakt_movie_keys:
+                    continue
                 movies_to_push.append({
                     "title": loc.get("title"),
                     "ids": {"imdb": imdb_id},
@@ -316,6 +413,8 @@ class TraktSyncManager:
                 s_num = loc.get("season")
                 e_num = loc.get("episode")
                 if s_num is not None and e_num is not None:
+                    if (imdb_id, s_num, e_num) in trakt_episode_keys or (imdb_id, None, None) in trakt_episode_keys:
+                        continue
                     episodes_to_push.append({
                         "show": {
                             "title": loc.get("title"),
@@ -325,16 +424,47 @@ class TraktSyncManager:
                         "number": e_num,
                         "watched_at": loc.get("last_watched"),
                     })
+                    if imdb_id not in shows_to_push:
+                        shows_to_push[imdb_id] = {
+                            "title": loc.get("title"),
+                            "ids": {"imdb": imdb_id},
+                            "seasons": {},
+                        }
+                    show_entry = shows_to_push[imdb_id]
+                    if s_num not in show_entry["seasons"]:
+                        show_entry["seasons"][s_num] = []
+                    show_entry["seasons"][s_num].append({
+                        "number": e_num,
+                        "watched_at": loc.get("last_watched"),
+                    })
 
-        if movies_to_push or episodes_to_push:
+        formatted_shows = []
+        for s_data in shows_to_push.values():
+            formatted_shows.append({
+                "title": s_data["title"],
+                "ids": s_data["ids"],
+                "seasons": [
+                    {"number": s, "episodes": eps}
+                    for s, eps in s_data["seasons"].items()
+                ],
+            })
+
+        if movies_to_push or formatted_shows or episodes_to_push:
             payload: Dict[str, Any] = {}
             if movies_to_push:
                 payload["movies"] = movies_to_push
-            if episodes_to_push:
+            if formatted_shows:
+                payload["shows"] = formatted_shows
+            elif episodes_to_push:
                 payload["episodes"] = episodes_to_push
+
             res = self.client.add_to_history(token, payload)
             if res:
                 added = res.get("added", {})
-                pushed_count = added.get("movies", 0) + added.get("episodes", 0)
+                pushed_count = (
+                    added.get("movies", 0)
+                    + added.get("episodes", 0)
+                    + added.get("shows", 0)
+                )
 
         return pulled_count, pushed_count

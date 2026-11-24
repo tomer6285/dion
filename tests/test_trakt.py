@@ -820,7 +820,8 @@ def test_cli_watchlist_empty(tmp_path: Path, mock_token: TraktToken):
     auth_mgr._save_token(mock_token)
 
     with patch("dion.cli.get_trakt_auth_mgr", return_value=auth_mgr), \
-         patch("dion.cli.get_trakt_sync_mgr") as mock_sync_mgr:
+         patch("dion.cli.get_trakt_sync_mgr") as mock_sync_mgr, \
+         patch("dion.trakt.background.start_background_sync"):
         mock_sync_mgr.return_value.fetch_watchlist_media.return_value = []
         result = runner.invoke(app, ["-w"])
         assert result.exit_code == 0

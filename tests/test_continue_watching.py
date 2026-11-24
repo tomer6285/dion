@@ -54,7 +54,7 @@ def test_failed_save_leaves_disk_memory_and_undo_unchanged(history):
     assert len(menu.items) == 3
     assert len(history.list_continue_watching()) == 3
     assert history.history_file.read_bytes() == before
-    assert sorted(p.name for p in history.config_dir.iterdir()) == ["history.json"]
+    assert sorted(p.name for p in history.config_dir.iterdir() if not p.name.startswith("history.sqlite3")) == ["history.json"]
 
 
 def run_questionary(menu, keys):

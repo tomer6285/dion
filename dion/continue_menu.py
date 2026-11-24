@@ -177,7 +177,30 @@ def _questionary_action(menu):
             return handler(event)
 
         binding.handler = cancel_then_handle
-    return q.unsafe_ask()
+    from .trakt.background import (
+        register_sync_refresh_listener,
+        unregister_sync_refresh_listener,
+    )
+
+    def _on_sync_refresh():
+        try:
+            if q.application.is_running and q.application.loop:
+                q.application.loop.call_soon_threadsafe(
+                    lambda: finish_sync()
+                )
+        except Exception:
+            pass
+
+    def finish_sync():
+        menu.query = control.search_filter or ""
+        menu.position = control.pointed_at
+        q.application.exit(result=("__sync_refresh__", None))
+
+    register_sync_refresh_listener(_on_sync_refresh)
+    try:
+        return q.unsafe_ask()
+    finally:
+        unregister_sync_refresh_listener(_on_sync_refresh)
 
 
 def select_continue(items, history, on_info=None):
@@ -195,6 +218,9 @@ def select_continue(items, history, on_info=None):
                 menu.message = f"Using fallback selector: {error}"
                 continue
             raise
+        if action == "__sync_refresh__":
+            menu.items = history.list_continue_watching()
+            continue
         try:
             if action == "exit":
                 return None

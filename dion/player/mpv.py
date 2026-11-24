@@ -57,6 +57,7 @@ local server = mp.get_opt("dion_server", ""):lower()
 local delays_file = (config_dir ~= "") and (config_dir .. "/sub_delays.json") or nil
 local pos_file = (config_dir ~= "") and (config_dir .. "/playback_positions.json") or nil
 local dur_file = (config_dir ~= "") and (config_dir .. "/playback_durations.json") or nil
+local comp_file = (config_dir ~= "") and (config_dir .. "/playback_completions.json") or nil
 
 local pos_key = imdb_id
 if season ~= "" and episode ~= "" then
@@ -158,6 +159,34 @@ local function save_duration(dur)
     end
 end
 
+local function mark_completed()
+    if not comp_file or pos_key == "" then return end
+    local data = {}
+    local f = io.open(comp_file, "r")
+    if f then
+        local content = f:read("*all")
+        f:close()
+        if content then
+            for k, v in content:gmatch('"([^"]+)"%s*:%s*([0-9%.]+)') do
+                data[k] = tonumber(v)
+            end
+        end
+    end
+    data[pos_key] = os.time()
+    local out = io.open(comp_file, "w")
+    if out then
+        out:write("{\\n")
+        local first = true
+        for k, v in pairs(data) do
+            if not first then out:write(",\\n") end
+            first = false
+            out:write(string.format('  "%s": %d', k, math.floor(v)))
+        end
+        out:write("\\n}\\n")
+        out:close()
+    end
+end
+
 local function save_position(force_pos)
     if not pos_file or pos_key == "" then return end
     local pos = force_pos or mp.get_property_number("time-pos", 0.0)
@@ -167,7 +196,8 @@ local function save_position(force_pos)
     end
     if force_pos == nil then
         if not pos or pos <= 0 then return end
-        if duration and duration > 60 and (pos >= duration - 60 or pos >= duration * 0.95) then
+        if duration and duration > 60 and (pos >= duration - 60 or pos >= duration * 0.90) then
+            mark_completed()
             pos = 0.0
         elseif pos < 10 then
             return
@@ -358,6 +388,7 @@ mp.add_forced_key_binding("Meta+q", "dion_cmd_q", quit_player)
 
 mp.register_event("end-file", function(event)
     if event and event.reason == "eof" then
+        mark_completed()
         save_position(0.0)
     else
         save_position()

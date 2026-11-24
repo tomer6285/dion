@@ -25,6 +25,7 @@ class TraktScrobbler:
         self.enabled = enabled
         self._lock = threading.Lock()
         self._active_session: Optional[dict] = None
+        self.last_scrobble_result: Optional[dict] = None
 
     def start_playback(
         self,
@@ -102,15 +103,19 @@ class TraktScrobbler:
         episode: Optional[EpisodeItem] = None,
         current_time: float = 0.0,
         duration: Optional[float] = None,
-    ) -> None:
+    ) -> Optional[dict]:
         """Synchronously or with short timeout send /scrobble/stop to Trakt.
 
         If progress >= 80%, Trakt automatically records the item as watched.
+        Returns the scrobble response if available.
         """
         if not self.enabled:
-            return
+            return None
+
+        result: Optional[dict] = None
 
         def _worker():
+            nonlocal result
             try:
                 token = self.auth_mgr.get_valid_token()
                 if not token:
@@ -123,16 +128,18 @@ class TraktScrobbler:
                     # If duration missing but position >= 0, estimate or report minimum
                     progress = 10.0
 
-                self.client.scrobble_stop(
+                result = self.client.scrobble_stop(
                     token=token,
                     media=media,
                     episode=episode,
                     progress=progress,
                 )
+                self.last_scrobble_result = result
             except Exception as e:
                 logger.debug("Trakt scrobble stop failed: %s", e)
 
         # Use short join timeout so exiting player returns promptly
         t = threading.Thread(target=_worker, name="dion-trakt-scrobble-stop", daemon=True)
         t.start()
-        t.join(timeout=1.2)
+        t.join(timeout=1.5)
+        return result

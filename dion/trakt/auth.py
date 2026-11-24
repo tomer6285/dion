@@ -59,6 +59,12 @@ class TraktAuthManager:
         except Exception as e:
             logger.error("Failed to save Trakt credentials: %s", e)
 
+    def has_credentials(self) -> bool:
+        """Check locally if Trakt credentials exist without making network requests."""
+        return self._token is not None and bool(
+            self._token.access_token or self._token.refresh_token
+        )
+
     def is_authenticated(self) -> bool:
         """Check if user has valid or refreshable Trakt credentials."""
         return self.get_valid_token() is not None

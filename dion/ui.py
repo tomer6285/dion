@@ -100,45 +100,71 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*[mK]", "", text)
 
 
+def prompt_manual_watch_date() -> str:
+    """Offer a date for manual marks, defaulting to today (ISO-8601 UTC)."""
+    import typer
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    msg = f"Enter watch date (YYYY-MM-DD)"
+    try:
+        val = typer.prompt(msg, default=today_str).strip()
+        if not val or val == today_str:
+            return datetime.now(timezone.utc).isoformat()
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except Exception:
+        return datetime.now(timezone.utc).isoformat()
+
+
 def fzf_select(
     prompt: str,
     choices: List[Tuple[str, T]],
     on_info: Optional[Callable[[T], None]] = None,
+    on_watch: Optional[Callable[[T], None]] = None,
+    refresh_choices: Optional[Callable[[], List[Tuple[str, T]]]] = None,
 ) -> Optional[T]:
     """Run interactive fuzzy selection using fzf."""
     if not choices:
         return None
 
-    # Mapping from displayed line to object
-    lookup: Dict[str, T] = {}
-    lines: List[str] = []
-    for display_str, val in choices:
-        clean_str = display_str.replace("\n", " ").strip()
-        lines.append(clean_str)
-        lookup[clean_str] = val
-        plain_str = strip_ansi(clean_str)
-        lookup[plain_str] = val
-
-    input_text = "\n".join(lines)
-    header = (
-        "Navigate: [↑/↓]  ·  Select: [Enter]  ·  Info: [i]  ·  Cancel: [Esc]"
-        if on_info
-        else "Use arrows/typing to search, Enter to select, Esc to cancel"
-    )
-    cmd = [
-        "fzf",
-        "--ansi",
-        "--reverse",
-        "--height=50%",
-        f"--prompt={prompt} > ",
-        f"--header={header}",
-        "--cycle",
-        "--no-multi",
-    ]
-    if on_info:
-        cmd.append("--expect=i")
-
     while True:
+        lookup: Dict[str, T] = {}
+        lines: List[str] = []
+        for display_str, val in choices:
+            clean_str = display_str.replace("\n", " ").strip()
+            lines.append(clean_str)
+            lookup[clean_str] = val
+            plain_str = strip_ansi(clean_str)
+            lookup[plain_str] = val
+
+        input_text = "\n".join(lines)
+        nav_parts = ["Navigate: [↑/↓]", "Select: [Enter]"]
+        if on_watch:
+            nav_parts.append("Watched: [w]")
+        if on_info:
+            nav_parts.append("Info: [i]")
+        nav_parts.append("Cancel: [Esc]")
+        header = "  ·  ".join(nav_parts)
+
+        cmd = [
+            "fzf",
+            "--ansi",
+            "--reverse",
+            "--height=50%",
+            f"--prompt={prompt} > ",
+            f"--header={header}",
+            "--cycle",
+            "--no-multi",
+        ]
+        expects = []
+        if on_info:
+            expects.append("i")
+        if on_watch:
+            expects.append("w")
+        if expects:
+            cmd.append(f"--expect={','.join(expects)}")
+
         try:
             proc = subprocess.run(
                 cmd,
@@ -153,32 +179,46 @@ def fzf_select(
                 return None
 
             lines_out = raw.splitlines()
-            if on_info and len(lines_out) >= 2 and lines_out[0].strip() == "i":
+            if expects and len(lines_out) >= 2:
+                key = lines_out[0].strip()
                 selected_line = lines_out[1].strip()
                 val = lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
-                if val is not None:
+                if key == "i" and on_info and val is not None:
                     console.clear()
                     on_info(val)
                     wait_for_any_key()
                     console.clear()
+                    if refresh_choices:
+                        choices = refresh_choices()
                     continue
-                return None
-            elif on_info and len(lines_out) >= 2:
-                selected_line = lines_out[1].strip()
-                return lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
+                elif key == "w" and on_watch and val is not None:
+                    on_watch(val)
+                    if refresh_choices:
+                        choices = refresh_choices()
+                    console.clear()
+                    continue
+                elif val is not None:
+                    return val
             elif lines_out:
                 selected_line = lines_out[0].strip()
                 return lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
             return None
         except Exception:
-            # Fall back to questionary if fzf encounters issues
-            return questionary_select(prompt, choices, on_info=on_info)
+            return questionary_select(
+                prompt,
+                choices,
+                on_info=on_info,
+                on_watch=on_watch,
+                refresh_choices=refresh_choices,
+            )
 
 
 def questionary_select(
     prompt: str,
     choices: List[Tuple[str, T]],
     on_info: Optional[Callable[[T], None]] = None,
+    on_watch: Optional[Callable[[T], None]] = None,
+    refresh_choices: Optional[Callable[[], List[Tuple[str, T]]]] = None,
 ) -> Optional[T]:
     """Fallback interactive arrow-key selection using questionary."""
     if not choices:
@@ -186,11 +226,14 @@ def questionary_select(
 
     while True:
         q_choices = [questionary.Choice(title=ANSI(display), value=val) for display, val in choices]
-        instruction = (
-            "(Use arrows or j/k to navigate, [i] for info, Enter to select)"
-            if on_info
-            else None
-        )
+        inst_parts = ["Use arrows or j/k to navigate"]
+        if on_watch:
+            inst_parts.append("[w] for watched toggle")
+        if on_info:
+            inst_parts.append("[i] for info")
+        inst_parts.append("Enter to select")
+        instruction = f"({', '.join(inst_parts)})"
+
         q = questionary.select(
             message=prompt,
             choices=q_choices,
@@ -208,42 +251,84 @@ def questionary_select(
             ),
         )
 
-        if on_info:
-            ic = None
-            for c in q.application.layout.find_all_controls():
-                if hasattr(c, "get_pointed_at"):
-                    ic = c
-                    break
+        ic = None
+        for c in q.application.layout.find_all_controls():
+            if hasattr(c, "get_pointed_at"):
+                ic = c
+                break
 
-            if ic is not None:
+        if ic is not None:
+            if on_info:
                 @q.application.key_bindings.add("i", eager=True)
                 def _(event, control=ic):
                     val = control.get_pointed_at().value
                     event.app.exit(result=("__info__", val))
 
+            if on_watch:
+                @q.application.key_bindings.add("w", eager=True)
+                def _w(event, control=ic):
+                    val = control.get_pointed_at().value
+                    event.app.exit(result=("__watch__", val))
+
+        from .trakt.background import (
+            register_sync_refresh_listener,
+            unregister_sync_refresh_listener,
+        )
+
+        def _on_sync_refresh():
+            try:
+                if q.application.is_running and q.application.loop:
+                    q.application.loop.call_soon_threadsafe(
+                        lambda: q.application.exit(result="__sync_refresh__")
+                    )
+            except Exception:
+                pass
+
+        if refresh_choices:
+            register_sync_refresh_listener(_on_sync_refresh)
+
         try:
             res = q.ask()
-            if isinstance(res, tuple) and len(res) == 2 and res[0] == "__info__":
-                val = res[1]
-                console.clear()
-                on_info(val)
-                wait_for_any_key()
+            if res == "__sync_refresh__" and refresh_choices:
+                choices = refresh_choices()
                 console.clear()
                 continue
+            if isinstance(res, tuple) and len(res) == 2:
+                if res[0] == "__info__" and on_info:
+                    val = res[1]
+                    console.clear()
+                    on_info(val)
+                    wait_for_any_key()
+                    console.clear()
+                    if refresh_choices:
+                        choices = refresh_choices()
+                    continue
+                elif res[0] == "__watch__" and on_watch:
+                    val = res[1]
+                    on_watch(val)
+                    if refresh_choices:
+                        choices = refresh_choices()
+                    console.clear()
+                    continue
             return res
         except (KeyboardInterrupt, Exception):
             return None
+        finally:
+            if refresh_choices:
+                unregister_sync_refresh_listener(_on_sync_refresh)
 
 
 def prompt_select(
     prompt: str,
     choices: List[Tuple[str, T]],
     on_info: Optional[Callable[[T], None]] = None,
+    on_watch: Optional[Callable[[T], None]] = None,
+    refresh_choices: Optional[Callable[[], List[Tuple[str, T]]]] = None,
 ) -> Optional[T]:
     """Select an item using fzf if available, otherwise questionary."""
     if has_fzf():
-        return fzf_select(prompt, choices, on_info=on_info)
-    return questionary_select(prompt, choices, on_info=on_info)
+        return fzf_select(prompt, choices, on_info=on_info, on_watch=on_watch, refresh_choices=refresh_choices)
+    return questionary_select(prompt, choices, on_info=on_info, on_watch=on_watch, refresh_choices=refresh_choices)
 
 
 def format_relative_time(iso_str: Optional[str]) -> str:
@@ -251,8 +336,12 @@ def format_relative_time(iso_str: Optional[str]) -> str:
     if not iso_str:
         return ""
     try:
+        from datetime import timezone
         dt = datetime.fromisoformat(iso_str)
-        now = datetime.now()
+        if dt.tzinfo is not None:
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.now()
         diff = now - dt
         seconds = int(diff.total_seconds())
 
@@ -326,15 +415,16 @@ def format_history_choice(item: Dict[str, Any], ansi: bool = True) -> str:
     if is_series and "season" in item and "episode" in item:
         s = item["season"]
         e = item["episode"]
-        ep_code = f"S{s:02d}E{e:02d}"
-        ep_title = item.get("episode_title")
-        if ep_title:
-            ep_str = f"{ep_code}: {ep_title}"
-        else:
-            ep_str = ep_code
-        if ansi:
-            ep_str = f"\033[36m{ep_str}\033[0m"
-        parts.append(ep_str)
+        if s is not None and e is not None:
+            ep_code = f"S{s:02d}E{e:02d}"
+            ep_title = item.get("episode_title")
+            if ep_title:
+                ep_str = f"{ep_code}: {ep_title}"
+            else:
+                ep_str = ep_code
+            if ansi:
+                ep_str = f"\033[36m{ep_str}\033[0m"
+            parts.append(ep_str)
 
     # Playback resume position and progress
     pos = float(item.get("position", 0.0) or 0.0)
@@ -453,6 +543,9 @@ class MediaSelectorState:
             self.type_filter = "all"
             self.selected_idx = 0
             self.scroll_offset = 0
+        elif ch in ("w", "W"):
+            if n > 0:
+                return ("watch", filtered[self.selected_idx])
         elif ch in ("\n", "\r", curses.KEY_ENTER, 10, 13):
             if n > 0:
                 return ("select", filtered[self.selected_idx])
@@ -468,16 +561,54 @@ class MediaSelectorState:
         return None
 
 
-def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
-    """Interactive full-screen media selector with Vim keybindings and filters."""
+def curses_select_media(
+    items: List[MediaItem],
+    history_mgr: Optional[Any] = None,
+    metadata_client: Optional[Any] = None,
+) -> Optional[MediaItem]:
+    """Interactive full-screen media selector with Vim keybindings, filters, and manual watched toggle."""
     if not items:
         return None
 
+    if history_mgr is None:
+        try:
+            from .cli import get_history_mgr
+            history_mgr = get_history_mgr()
+        except Exception:
+            history_mgr = None
+
+    if metadata_client is None:
+        try:
+            from .cli import get_metadata_client
+            metadata_client = get_metadata_client()
+        except Exception:
+            metadata_client = None
+
     if curses is None or sys.platform == "win32":
-        return prompt_select("Select title", [
-            (f"[{item.media_type.value}] {item.title} ({item.year or '?'})", item)
-            for item in items
-        ])
+        def build_fallback_choices():
+            chs: List[Tuple[str, MediaItem]] = []
+            for item in items:
+                w_badge = ""
+                if history_mgr:
+                    is_w = history_mgr.is_watched(item.imdb_id)
+                    w_badge = "[✓] " if is_w else "[ ] "
+                type_badge = "🎬 [Movie]" if item.media_type == MediaType.MOVIE else "📺 [Series]"
+                year_str = f"({item.year})" if item.year else ""
+                label = f"{w_badge}{type_badge} {item.title} {year_str}".strip()
+                chs.append((label, item))
+            return chs
+
+        def on_fallback_watch(item: MediaItem):
+            if not history_mgr:
+                return
+            _toggle_media_watched(item, history_mgr, metadata_client)
+
+        return prompt_select(
+            "Select title",
+            build_fallback_choices(),
+            on_watch=on_fallback_watch if history_mgr else None,
+            refresh_choices=build_fallback_choices,
+        )
 
     state = MediaSelectorState(items)
 
@@ -512,11 +643,29 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
                 curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_YELLOW)   # Search mode badge
                 curses.init_pair(8, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, bg)  # Dim/borders
                 curses.init_pair(9, curses.COLOR_YELLOW, bg)                   # Year / search highlight
+                curses.init_pair(10, curses.COLOR_GREEN, bg)                   # Watched indicator
                 has_color = True
             except (curses.error, ValueError):
                 has_color = False
 
+        import threading
+        from .trakt.background import (
+            register_sync_refresh_listener,
+            unregister_sync_refresh_listener,
+        )
+
         stdscr.keypad(True)
+        stdscr.timeout(250)
+        refresh_event = threading.Event()
+        register_sync_refresh_listener(refresh_event.set)
+
+        try:
+            return _curses_media_loop(stdscr, items, state, has_color, history_mgr, metadata_client, refresh_event)
+        finally:
+            unregister_sync_refresh_listener(refresh_event.set)
+
+
+    def _curses_media_loop(stdscr, items, state, has_color, history_mgr, metadata_client, refresh_event):
 
         while True:
             filtered = state.get_filtered_items()
@@ -557,7 +706,6 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
             try:
                 stdscr.addstr(1, 2, "Filter: ", curses.color_pair(8) if has_color else curses.A_DIM)
 
-                # [a] All
                 all_str = f" [a] All ({len(items)}) "
                 if state.type_filter == "all":
                     stdscr.addstr(all_str, (curses.color_pair(4) if has_color else curses.A_REVERSE) | curses.A_BOLD)
@@ -566,7 +714,6 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
 
                 stdscr.addstr("  ")
 
-                # [m] Movies
                 mov_str = f" [m] Movies ({total_movies}) "
                 if state.type_filter == "movie":
                     stdscr.addstr(mov_str, (curses.color_pair(4) if has_color else curses.A_REVERSE) | curses.A_BOLD)
@@ -575,7 +722,6 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
 
                 stdscr.addstr("  ")
 
-                # [s] Shows
                 ser_str = f" [s] Shows ({total_shows}) "
                 if state.type_filter == "series":
                     stdscr.addstr(ser_str, (curses.color_pair(4) if has_color else curses.A_REVERSE) | curses.A_BOLD)
@@ -615,15 +761,22 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
 
                     prefix = " ▶ " if is_curr else "   "
                     badge = "[Movie] " if item.media_type == MediaType.MOVIE else "[Show]  "
+                    w_tag = ""
+                    if history_mgr:
+                        if item.media_type == MediaType.MOVIE:
+                            w_tag = "[✓] " if history_mgr.is_watched(item.imdb_id) else "[ ] "
+                        else:
+                            w_tag = "[✓] " if history_mgr.is_watched(item.imdb_id) else "[ ] "
+
                     year_str = f" ({item.year})" if item.year else ""
                     title_str = item.title
 
-                    used_len = len(prefix) + len(badge) + len(year_str) + 1
+                    used_len = len(prefix) + len(w_tag) + len(badge) + len(year_str) + 1
                     avail_len = max(8, max_x - used_len - 1)
                     if len(title_str) > avail_len:
                         title_str = title_str[:avail_len - 1] + "…"
 
-                    full_line = f"{prefix}{badge}{title_str}{year_str}"
+                    full_line = f"{prefix}{w_tag}{badge}{title_str}{year_str}"
                     full_line_padded = full_line.ljust(max_x - 2)
 
                     try:
@@ -632,6 +785,10 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
                             stdscr.addstr(curr_y, 0, full_line_padded[:max_x - 1], curr_attr)
                         else:
                             stdscr.addstr(curr_y, 0, prefix, curses.color_pair(8) if has_color else curses.A_DIM)
+                            if w_tag.startswith("[✓]"):
+                                stdscr.addstr(w_tag, (curses.color_pair(10) if has_color else curses.A_BOLD))
+                            else:
+                                stdscr.addstr(w_tag, curses.color_pair(8) if has_color else curses.A_DIM)
                             badge_color = (curses.color_pair(2) if item.media_type == MediaType.MOVIE else curses.color_pair(3)) if has_color else curses.A_BOLD
                             stdscr.addstr(badge, badge_color | curses.A_BOLD)
                             stdscr.addstr(title_str, curses.A_BOLD)
@@ -683,20 +840,27 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
                         active_query_tag = f" Filtered by: '{state.search_query}' (press / to edit, Esc to clear)"
                         stdscr.addstr(footer_y, 2 + len(normal_mode_tag) + 1, active_query_tag[:max_x - 15], curses.color_pair(9) if has_color else curses.A_BOLD)
 
-                    help_text = "[j/k] Navigate   [/] Search   [m] Movies   [s] Shows   [a] All   [Enter] Select   [q/Esc] Quit"
+                    help_text = "[j/k] Navigate   [/] Search   [w] Toggle Watched   [Enter] Select   [q/Esc] Quit"
                     stdscr.addstr(help_y, 2, help_text[:max_x - 3], curses.color_pair(8) if has_color else curses.A_DIM)
                 except curses.error:
                     pass
 
             stdscr.refresh()
 
-            # Input dispatch
-            try:
-                ch = stdscr.get_wch()
-            except curses.error:
-                continue
+            # Input dispatch (poll timeout every 250ms so background sync can trigger redraws)
+            ch = None
+            while True:
+                try:
+                    ch = stdscr.get_wch()
+                    break
+                except curses.error:
+                    if refresh_event.is_set():
+                        refresh_event.clear()
+                        ch = None
+                        break
+                    continue
 
-            if ch == curses.KEY_RESIZE:
+            if ch is None or ch == curses.KEY_RESIZE:
                 continue
 
             visible_height = max(1, list_max_lines)
@@ -705,13 +869,21 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
                 action, selected_item = res
                 if action == "select":
                     return selected_item
+                elif action == "watch" and selected_item and history_mgr:
+                    curses.def_prog_mode()
+                    curses.endwin()
+                    try:
+                        _toggle_media_watched(selected_item, history_mgr, metadata_client)
+                    finally:
+                        curses.reset_prog_mode()
+                        stdscr.refresh()
+                    continue
                 elif action == "quit":
                     return None
 
     try:
         return curses.wrapper(_ui)
     except Exception:
-        # Fallback to prompt_select if curses cannot initialize (e.g. non-interactive stream)
         choices: List[Tuple[str, MediaItem]] = []
         for item in items:
             type_badge = "🎬 [Movie]" if item.media_type == MediaType.MOVIE else "📺 [Series]"
@@ -721,45 +893,202 @@ def curses_select_media(items: List[MediaItem]) -> Optional[MediaItem]:
         return prompt_select("Select title", choices)
 
 
-def select_media(items: List[MediaItem]) -> Optional[MediaItem]:
+def _toggle_media_watched(
+    item: MediaItem,
+    history_mgr: Any,
+    metadata_client: Optional[Any] = None,
+) -> None:
+    """Handle watched status toggling for a movie or show with preview and confirmations."""
+    import typer
+    from .storage.history import is_episode_released
+
+    if item.media_type == MediaType.MOVIE:
+        is_w = history_mgr.is_watched(item.imdb_id)
+        if is_w:
+            p_count = history_mgr.get_play_count(item.imdb_id)
+            confirm = typer.confirm(
+                f"\nClear all {p_count} play(s) for '{item.title}'?",
+                default=False,
+            )
+            if confirm:
+                history_mgr.clear_plays_for_show_or_movie(item.imdb_id)
+                console.print(f"[bold green]✓ Cleared plays for '{item.title}'.[/bold green]")
+        else:
+            w_date = prompt_manual_watch_date()
+            history_mgr.record_play(item, watched_at=w_date, source="manual")
+            console.print(f"[bold green]✓ Marked '{item.title}' watched.[/bold green]")
+    else:
+        episodes = []
+        if metadata_client:
+            with console.status(f"[bold cyan]Fetching episodes for {item.title}...[/bold cyan]"):
+                episodes = metadata_client.get_episodes(item.imdb_id)
+        if not episodes:
+            console.print("[yellow]Could not retrieve episodes for show-wide toggle.[/yellow]")
+            return
+
+        w_count, tot_rel = history_mgr.get_show_watched_status(item.imdb_id, episodes, include_specials=False)
+        if w_count == tot_rel and tot_rel > 0:
+            p_count = sum(history_mgr.get_play_count(item.imdb_id, ep.season, ep.episode) for ep in episodes)
+            confirm = typer.confirm(
+                f"\nClear all {p_count} play(s) across all seasons for '{item.title}'?",
+                default=False,
+            )
+            if confirm:
+                history_mgr.clear_plays_for_show_or_movie(item.imdb_id, include_specials=True)
+                console.print(f"[bold green]✓ Cleared all plays for '{item.title}'.[/bold green]")
+        else:
+            specials = [ep for ep in episodes if ep.season == 0 and is_episode_released(ep)]
+            include_specials = False
+            if specials:
+                include_specials = typer.confirm(
+                    f"\nInclude {len(specials)} specials (Season 0) for '{item.title}'?",
+                    default=False,
+                )
+            unplayed = [
+                ep for ep in episodes
+                if (include_specials or ep.season > 0)
+                and is_episode_released(ep)
+                and not history_mgr.is_watched(item.imdb_id, ep.season, ep.episode)
+            ]
+            confirm = typer.confirm(
+                f"\nMark '{item.title}' watched? {len(unplayed)} released episode(s) will be marked (preserving {w_count} existing play dates).",
+                default=True,
+            )
+            if confirm:
+                w_date = prompt_manual_watch_date()
+                history_mgr.mark_episodes_watched(item, unplayed, watched_at=w_date)
+                console.print(f"[bold green]✓ Marked {len(unplayed)} episode(s) watched.[/bold green]")
+
+
+def select_media(
+    items: List[MediaItem],
+    history_mgr: Optional[Any] = None,
+    metadata_client: Optional[Any] = None,
+) -> Optional[MediaItem]:
     """Prompt user to choose a movie or show from search results with Vim keybindings and filters."""
     if not items:
         return None
-    return curses_select_media(items)
+    return curses_select_media(items, history_mgr=history_mgr, metadata_client=metadata_client)
 
 
-def select_season(episodes: List[EpisodeItem]) -> Optional[int]:
-    """Prompt user to select a season from available episodes."""
+def select_season(
+    episodes: List[EpisodeItem],
+    media: Optional[MediaItem] = None,
+    history_mgr: Optional[Any] = None,
+) -> Optional[int]:
+    """Prompt user to select a season from available episodes with watched indicators and 'w' toggle."""
     seasons = sorted(list({ep.season for ep in episodes if ep.season > 0}))
     if not seasons:
         return None
-    if len(seasons) == 1:
-        return seasons[0]
 
-    choices: List[Tuple[str, int]] = []
-    for s in seasons:
-        count = sum(1 for ep in episodes if ep.season == s)
-        choices.append((f"Season {s} ({count} episodes)", s))
+    if history_mgr is None:
+        try:
+            from .cli import get_history_mgr
+            history_mgr = get_history_mgr()
+        except Exception:
+            history_mgr = None
 
-    return prompt_select("Select season", choices)
+    imdb_id = media.imdb_id if media else (episodes[0].id.split(":")[0] if episodes and ":" in episodes[0].id else "")
+
+    def build_choices() -> List[Tuple[str, int]]:
+        chs: List[Tuple[str, int]] = []
+        for s in seasons:
+            count = sum(1 for ep in episodes if ep.season == s)
+            if history_mgr and imdb_id:
+                w_count, tot_rel = history_mgr.get_season_watched_status(imdb_id, s, episodes)
+                if w_count == tot_rel and tot_rel > 0:
+                    badge = f"\033[32m[✓ {w_count}/{tot_rel}]\033[0m"
+                elif w_count > 0:
+                    badge = f"\033[33m[◐ {w_count}/{tot_rel}]\033[0m"
+                else:
+                    badge = f"\033[2m[  {w_count}/{tot_rel}]\033[0m"
+                chs.append((f"{badge} Season {s} ({count} episodes)", s))
+            else:
+                chs.append((f"Season {s} ({count} episodes)", s))
+        return chs
+
+    def on_watch(s: int) -> None:
+        if not history_mgr or not imdb_id:
+            return
+        import typer
+        from .storage.history import is_episode_released
+        season_eps = [ep for ep in episodes if ep.season == s]
+        w_count, tot_rel = history_mgr.get_season_watched_status(imdb_id, s, episodes)
+        if w_count == tot_rel and tot_rel > 0:
+            play_count = sum(history_mgr.get_play_count(imdb_id, s, ep.episode) for ep in season_eps)
+            confirm = typer.confirm(
+                f"\nClear all {play_count} plays for Season {s} across {w_count} episode(s)?",
+                default=False,
+            )
+            if confirm:
+                history_mgr.clear_plays_for_season(imdb_id, s)
+                console.print(f"[bold green]✓ Cleared all plays for Season {s}.[/bold green]")
+        else:
+            unplayed = [
+                ep for ep in season_eps
+                if is_episode_released(ep) and not history_mgr.is_watched(imdb_id, s, ep.episode)
+            ]
+            confirm = typer.confirm(
+                f"\nMark Season {s} watched? {len(unplayed)} released episode(s) will be marked (preserving {w_count} existing play dates).",
+                default=True,
+            )
+            if confirm:
+                date_str = prompt_manual_watch_date()
+                dummy_media = media or MediaItem(
+                    id=imdb_id,
+                    imdb_id=imdb_id,
+                    title=f"Season {s}",
+                    media_type=MediaType.SERIES,
+                )
+                history_mgr.mark_episodes_watched(dummy_media, unplayed, watched_at=date_str)
+                console.print(f"[bold green]✓ Marked {len(unplayed)} episodes watched.[/bold green]")
+
+    return prompt_select(
+        "Select season",
+        build_choices(),
+        on_watch=on_watch if history_mgr and imdb_id else None,
+        refresh_choices=build_choices,
+    )
 
 
 def select_episode(
     episodes: List[EpisodeItem],
     season: int,
     media: Optional[MediaItem] = None,
+    history_mgr: Optional[Any] = None,
 ) -> Optional[EpisodeItem]:
-    """Prompt user to choose an episode in the selected season."""
+    """Prompt user to choose an episode with watched indicators and 'w' toggle."""
     season_episodes = [ep for ep in episodes if ep.season == season]
     if not season_episodes:
         return None
 
-    choices: List[Tuple[str, EpisodeItem]] = []
-    for ep in season_episodes:
-        label = f"E{ep.episode:02d}: {ep.title}"
-        if ep.released:
-            label += f" ({ep.released[:10]})"
-        choices.append((label, ep))
+    if history_mgr is None:
+        try:
+            from .cli import get_history_mgr
+            history_mgr = get_history_mgr()
+        except Exception:
+            history_mgr = None
+
+    imdb_id = media.imdb_id if media else (season_episodes[0].id.split(":")[0] if season_episodes and ":" in season_episodes[0].id else "")
+
+    def build_choices() -> List[Tuple[str, EpisodeItem]]:
+        chs: List[Tuple[str, EpisodeItem]] = []
+        for ep in season_episodes:
+            ind = ""
+            if history_mgr and imdb_id:
+                p_count = history_mgr.get_play_count(imdb_id, season, ep.episode)
+                if p_count > 1:
+                    ind = f"\033[35m[✓ {p_count}x]\033[0m "
+                elif p_count == 1:
+                    ind = "\033[32m[✓]\033[0m "
+                else:
+                    ind = "\033[2m[ ]\033[0m "
+
+            label = f"{ind}E{ep.episode:02d}: {ep.title}"
+            if ep.released:
+                label += f" \033[2m({ep.released[:10]})\033[0m"
+            chs.append((label, ep))
+        return chs
 
     def on_info(ep: EpisodeItem) -> None:
         if media:
@@ -767,13 +1096,70 @@ def select_episode(
         else:
             dummy_media = MediaItem(
                 id=ep.id,
-                imdb_id=ep.id.split(":")[0] if ":" in ep.id else "",
+                imdb_id=imdb_id,
                 title=f"Season {season}",
                 media_type=MediaType.SERIES,
             )
             show_media_info(dummy_media, ep)
 
-    return prompt_select(f"Select episode for Season {season}", choices, on_info=on_info)
+    def on_watch(ep: EpisodeItem) -> None:
+        if not history_mgr or not imdb_id:
+            return
+        import typer
+        from .storage.history import is_episode_released
+
+        dummy_media = media or MediaItem(
+            id=ep.id,
+            imdb_id=imdb_id,
+            title=f"Season {season}",
+            media_type=MediaType.SERIES,
+        )
+        p_count = history_mgr.get_play_count(imdb_id, season, ep.episode)
+        if p_count > 0:
+            confirm = typer.confirm(
+                f"\nClear all {p_count} play(s) for E{ep.episode:02d} ({ep.title})?",
+                default=False,
+            )
+            if confirm:
+                history_mgr.clear_plays_for_episode(imdb_id, season, ep.episode)
+                console.print(f"[bold green]✓ Cleared plays for E{ep.episode:02d}.[/bold green]")
+        else:
+            earlier_unplayed = [
+                e for e in season_episodes
+                if e.episode < ep.episode and is_episode_released(e) and not history_mgr.is_watched(imdb_id, season, e.episode)
+            ]
+            if earlier_unplayed:
+                single_lbl = f"Mark E{ep.episode:02d} watched only"
+                earlier_lbl = f"Mark earlier episodes and E{ep.episode:02d} watched (Preview: {len(earlier_unplayed) + 1} episodes)"
+                act = prompt_select(
+                    f"Watched action for E{ep.episode:02d}",
+                    [(single_lbl, "single"), (earlier_lbl, "earlier"), ("Cancel", "cancel")],
+                )
+                if not act or act == "cancel":
+                    return
+                if act == "earlier":
+                    preview = f"Mark {len(earlier_unplayed) + 1} released episodes watched? (Preserving existing play dates)"
+                    if typer.confirm(f"\n{preview}", default=True):
+                        w_date = prompt_manual_watch_date()
+                        to_mark = earlier_unplayed + [ep]
+                        history_mgr.mark_episodes_watched(dummy_media, to_mark, watched_at=w_date)
+                        console.print(f"[bold green]✓ Marked {len(to_mark)} episodes watched.[/bold green]")
+                else:
+                    w_date = prompt_manual_watch_date()
+                    history_mgr.record_play(dummy_media, episode=ep, watched_at=w_date, source="manual")
+                    console.print(f"[bold green]✓ Marked E{ep.episode:02d} watched.[/bold green]")
+            else:
+                w_date = prompt_manual_watch_date()
+                history_mgr.record_play(dummy_media, episode=ep, watched_at=w_date, source="manual")
+                console.print(f"[bold green]✓ Marked E{ep.episode:02d} watched.[/bold green]")
+
+    return prompt_select(
+        f"Select episode for Season {season}",
+        build_choices(),
+        on_info=on_info,
+        on_watch=on_watch if history_mgr and imdb_id else None,
+        refresh_choices=build_choices,
+    )
 
 
 def select_source(sources: List[StreamSource]) -> Optional[StreamSource]:

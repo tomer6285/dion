@@ -273,17 +273,30 @@ class TraktClient:
         token: str,
         limit: Optional[int] = 50,
         page: int = 1,
+        start_at: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve user's watched history from Trakt.
 
         If limit is None, fetches complete history across all pages.
+        Sets `_last_history_request_ok` and `_last_history_page_count` so callers
+        can distinguish an empty HTTP 200 page from a failed request.
         """
+        extra_query = f"&start_at={start_at}" if start_at else ""
         if limit is not None:
-            url = f"{self.BASE_URL}/sync/history?page={page}&limit={limit}&extended=full"
+            self._last_history_request_ok = False
+            self._last_history_page_count: Optional[int] = None
+            url = f"{self.BASE_URL}/sync/history?page={page}&limit={limit}&extended=full{extra_query}"
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     resp = client.get(url, headers=self._headers(token))
                     if resp.status_code == 200:
+                        self._last_history_request_ok = True
+                        page_count_header = resp.headers.get("X-Pagination-Page-Count")
+                        if page_count_header:
+                            try:
+                                self._last_history_page_count = int(page_count_header)
+                            except ValueError:
+                                pass
                         return resp.json()
             except Exception as e:
                 logger.warning("Failed to fetch Trakt history: %s", e)
@@ -294,7 +307,7 @@ class TraktClient:
         current_page = 1
         page_size = 100
         while True:
-            url = f"{self.BASE_URL}/sync/history?page={current_page}&limit={page_size}&extended=full"
+            url = f"{self.BASE_URL}/sync/history?page={current_page}&limit={page_size}&extended=full{extra_query}"
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     resp = client.get(url, headers=self._headers(token))
@@ -330,4 +343,16 @@ class TraktClient:
                     return resp.json()
         except Exception as e:
             logger.warning("Failed to add to Trakt history: %s", e)
+        return None
+
+    def remove_from_history(self, token: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Remove items from user's Trakt history."""
+        url = f"{self.BASE_URL}/sync/history/remove"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.post(url, json=payload, headers=self._headers(token))
+                if resp.status_code in (200, 201):
+                    return resp.json()
+        except Exception as e:
+            logger.warning("Failed to remove from Trakt history: %s", e)
         return None

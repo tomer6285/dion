@@ -245,7 +245,7 @@ def play_or_download(
             )
             return status == 0
         else:
-            history_mgr.record_watch(
+            history_mgr.update_resume_state(
                 media=media,
                 episode=episode,
                 playback_position=start_time or 0.0,
@@ -288,6 +288,13 @@ def play_or_download(
                     duration=dur,
                 )
 
+            scrobble_res = None
+            explicit_completion = False
+            history_mgr.clear_playback_completion(
+                media.imdb_id,
+                season=episode.season if episode else None,
+                episode=episode.episode if episode else None,
+            )
             try:
                 exit_code = get_player().play(
                     source=source,
@@ -299,29 +306,80 @@ def play_or_download(
             finally:
                 if rpc:
                     rpc.stop()
+                explicit_completion = history_mgr.consume_playback_completion(
+                    media.imdb_id,
+                    season=episode.season if episode else None,
+                    episode=episode.episode if episode else None,
+                )
+                final_pos = history_mgr.get_playback_position(
+                    media.imdb_id,
+                    season=episode.season if episode else None,
+                    episode=episode.episode if episode else None,
+                )
+                final_dur = history_mgr.get_playback_duration(
+                    media.imdb_id,
+                    season=episode.season if episode else None,
+                    episode=episode.episode if episode else None,
+                )
+                reached_threshold = bool(
+                    final_dur
+                    and final_dur > 0
+                    and (
+                        final_pos >= final_dur * 0.9
+                        or (final_dur > 60 and final_pos >= final_dur - 60)
+                    )
+                )
                 if scrobbler:
-                    final_pos = history_mgr.get_playback_position(
-                        media.imdb_id,
-                        season=episode.season if episode else None,
-                        episode=episode.episode if episode else None,
+                    scrobble_pos = (
+                        final_dur
+                        if (explicit_completion and final_dur and final_dur > 0 and final_pos == 0.0)
+                        else final_pos
                     )
-                    final_dur = history_mgr.get_playback_duration(
-                        media.imdb_id,
-                        season=episode.season if episode else None,
-                        episode=episode.episode if episode else None,
-                    )
-                    scrobbler.stop_playback(
+                    scrobble_res = scrobbler.stop_playback(
                         media=media,
                         episode=episode,
-                        current_time=final_pos,
+                        current_time=scrobble_pos,
                         duration=final_dur,
                     )
 
             # Exit codes 0 (normal finish/quit), 4 (signal/VO quit), -2 (SIGINT), -15 (SIGTERM)
             # all indicate normal user quit or playback completion.
             if exit_code in (0, 4, -2, -15):
-                # Update watch history with latest saved position from Lua engine
-                history_mgr.record_watch(media=media, episode=episode)
+                scrobbled_play_id = (
+                    scrobble_res.get("id")
+                    if (scrobble_res and scrobble_res.get("action") == "scrobble")
+                    else None
+                )
+
+                is_completed = (
+                    explicit_completion
+                    or reached_threshold
+                    or (scrobbled_play_id is not None)
+                )
+
+                if is_completed:
+                    history_mgr.record_play(
+                        media=media,
+                        episode=episode,
+                        trakt_play_id=scrobbled_play_id,
+                        source="scrobble" if scrobbled_play_id else "playback",
+                        queue_sync=(scrobbled_play_id is None),
+                    )
+                    history_mgr.update_resume_state(
+                        media=media,
+                        episode=episode,
+                        playback_position=0.0,
+                        duration=final_dur,
+                    )
+                else:
+                    # Early quit: only update resume point
+                    history_mgr.update_resume_state(
+                        media=media,
+                        episode=episode,
+                        playback_position=final_pos,
+                        duration=final_dur,
+                    )
+
                 console.clear()
                 return True
 
@@ -735,13 +793,16 @@ def main(
             is_auth = trakt_auth.is_authenticated()
             user = trakt_auth.get_username() if is_auth else None
             scrobble_st = "Enabled" if settings_mgr.trakt_scrobble else "Disabled"
+            last_sync = get_trakt_sync_mgr().get_last_successful_sync_time(history_mgr)
             status_msg = (
                 f"[bold green]Connected[/bold green] as [bold white]@{user}[/bold white]\n"
                 if is_auth
                 else "[bold yellow]Not connected[/bold yellow]\n"
             )
             status_msg += f"[dim]• Real-time Playback Scrobble:[/dim] {scrobble_st}\n"
-            status_msg += f"[dim]• Continue Watching 60d Sync:[/dim] {'Active' if is_auth else 'Inactive'}"
+            status_msg += f"[dim]• Continue Watching 60d Sync:[/dim] {'Active' if is_auth else 'Inactive'}\n"
+            if is_auth and last_sync:
+                status_msg += f"[dim]• Last Successful Sync:[/dim] {last_sync}"
             console.print(Panel(status_msg, title="[bold purple] 🍇 Trakt.tv Status [/bold purple]", border_style="cyan", expand=False))
             raise typer.Exit(0)
         elif trakt_sub == "sync":
@@ -798,23 +859,73 @@ def main(
         console.print("[bold green]✓ Watch history deleted successfully.[/bold green]")
         raise typer.Exit(0)
 
-    # 2. Handle continue watching & history selection
-    if continue_watching or show_history:
-        console.clear()
-        items = (
-            history_mgr.list_continue_watching() if continue_watching
-            else history_mgr.list_history()
-        )
-        if continue_watching and get_trakt_auth_mgr().is_authenticated():
-            with console.status("[bold cyan]Syncing continue watching with Trakt.tv (past 60 days)...[/bold cyan]"):
-                try:
-                    items = get_trakt_sync_mgr().merge_continue_watching(items, max_age_days=60)
-                except Exception:
-                    pass
+    # Start non-blocking background Trakt sync on interactive launch for connected accounts
+    trakt_auth = get_trakt_auth_mgr()
+    if trakt_auth.has_credentials() and not sync and not download:
+        from .trakt.background import start_background_sync
+        start_background_sync(history_mgr=history_mgr, auth_mgr=trakt_auth, client=get_trakt_client())
 
+    # 2. Handle dedicated watch history view
+    if show_history:
+        from .history_view import select_from_history
+        selected_play = select_from_history(history_mgr)
+        if not selected_play:
+            return
+
+        m_type = MediaType(selected_play.get("media_type", "movie"))
+        details = metadata_client.get_details(m_type, selected_play["imdb_id"])
+        if not details:
+            details = MediaItem(
+                id=selected_play["imdb_id"],
+                imdb_id=selected_play["imdb_id"],
+                title=selected_play.get("title", "Unknown"),
+                media_type=m_type,
+                year=selected_play.get("year"),
+            )
+
+        if m_type == MediaType.SERIES:
+            all_episodes = metadata_client.get_episodes(details.imdb_id)
+            s_num = selected_play.get("season", 1)
+            e_num = selected_play.get("episode", 1)
+            target_ep = next((e for e in all_episodes if e.season == s_num and e.episode == e_num), None)
+            if not target_ep:
+                target_ep = EpisodeItem(
+                    id=f"{details.imdb_id}:{s_num}:{e_num}",
+                    season=s_num,
+                    episode=e_num,
+                    title=selected_play.get("episode_title") or f"Episode {e_num}",
+                )
+            _binge_loop(
+                details,
+                all_episodes,
+                target_ep,
+                download,
+                output_dir,
+                best,
+                video_format=video_format,
+                overwrite=overwrite,
+                sub_delay=sub_delay,
+            )
+            return
+        else:
+            play_or_download(
+                details,
+                None,
+                download,
+                output_dir,
+                video_format=video_format,
+                overwrite=overwrite,
+                auto_select=best,
+                sub_delay=sub_delay,
+            )
+            return
+
+    # 3. Handle continue watching selection
+    if continue_watching:
+        console.clear()
+        items = history_mgr.list_continue_watching()
         if not items:
-            message = "No continue watching titles found." if continue_watching else "No watch history found."
-            console.print(f"[yellow]{message}[/yellow]")
+            console.print("[yellow]No continue watching titles found.[/yellow]")
             raise typer.Exit(0)
 
         # Advance any completed series episodes to the next episode
@@ -846,7 +957,7 @@ def main(
                                     ep_dur = parse_runtime(next_ep.runtime)
                                     if ep_dur:
                                         item["duration"] = ep_dur
-                                history_mgr.record_watch(
+                                history_mgr.update_resume_state(
                                     media=MediaItem(
                                         id=imdb_id,
                                         imdb_id=imdb_id,
@@ -901,12 +1012,8 @@ def main(
 
             show_media_info(details, ep)
 
-        if continue_watching:
-            from .continue_menu import select_continue
-            selected = select_continue(items, history_mgr, on_info=on_history_info)
-        else:
-            choices = [(format_history_choice(i), i) for i in items]
-            selected = prompt_select("Select from history", choices, on_info=on_history_info)
+        from .continue_menu import select_continue
+        selected = select_continue(items, history_mgr, on_info=on_history_info)
         console.clear()
         if not selected:
             return
@@ -991,7 +1098,7 @@ def main(
             raise typer.Exit(0)
 
         console.clear()
-        selected_media = select_media(watchlist_items)
+        selected_media = select_media(watchlist_items, history_mgr=history_mgr, metadata_client=metadata_client)
         if not selected_media:
             return
         console.clear()
@@ -1012,7 +1119,7 @@ def main(
             raise typer.Exit(1)
 
         console.clear()
-        selected_media = select_media(results)
+        selected_media = select_media(results, history_mgr=history_mgr, metadata_client=metadata_client)
         if not selected_media:
             return
         console.clear()
@@ -1041,7 +1148,7 @@ def main(
         # Determine target season
         chosen_season = season_arg
         if chosen_season is None:
-            chosen_season = select_season(episodes)
+            chosen_season = select_season(episodes, media=selected_media, history_mgr=history_mgr)
             if chosen_season is None:
                 return
 
@@ -1153,7 +1260,7 @@ def main(
                 )
                 raise typer.Exit(1)
         else:
-            target_episode = select_episode(episodes, chosen_season, selected_media)
+            target_episode = select_episode(episodes, chosen_season, media=selected_media, history_mgr=history_mgr)
             if target_episode is None:
                 return
 
@@ -1221,7 +1328,7 @@ def _binge_loop(
             next_ep = all_episodes[current_idx + 1]
             history_mgr = get_history_mgr()
             if ep and history_mgr.is_episode_completed(media.imdb_id, ep.season, ep.episode):
-                history_mgr.record_watch(
+                history_mgr.update_resume_state(
                     media=media,
                     episode=next_ep,
                     playback_position=0.0,
@@ -1242,18 +1349,18 @@ def _binge_loop(
                 active_start_time = None
             elif action == "replay":
                 active_start_time = 0.0
-                history_mgr.record_watch(
+                history_mgr.update_resume_state(
                     media=media,
                     episode=ep,
                     playback_position=0.0,
                 )
             elif action == "select_episode":
                 # Re-select episode
-                chosen_season = select_season(all_episodes)
+                chosen_season = select_season(all_episodes, media=media, history_mgr=history_mgr)
                 console.clear()
                 if not chosen_season:
                     break
-                ep = select_episode(all_episodes, chosen_season, media)
+                ep = select_episode(all_episodes, chosen_season, media=media, history_mgr=history_mgr)
                 console.clear()
                 if not ep:
                     break
@@ -1270,12 +1377,19 @@ def _binge_loop(
             console.clear()
             if action == "replay":
                 active_start_time = 0.0
+                history_mgr = get_history_mgr()
+                history_mgr.update_resume_state(
+                    media=media,
+                    episode=ep,
+                    playback_position=0.0,
+                )
             elif action == "select_episode":
-                chosen_season = select_season(all_episodes)
+                history_mgr = get_history_mgr()
+                chosen_season = select_season(all_episodes, media=media, history_mgr=history_mgr)
                 console.clear()
                 if not chosen_season:
                     break
-                ep = select_episode(all_episodes, chosen_season, media)
+                ep = select_episode(all_episodes, chosen_season, media=media, history_mgr=history_mgr)
                 console.clear()
                 if not ep:
                     break

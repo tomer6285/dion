@@ -777,3 +777,95 @@ def test_cli_short_help_and_uppercase_history_flags(tmp_path: Path):
         res_long = runner.invoke(app, ["--history"])
         assert res_long.exit_code == 0
         assert mock_select_history.call_count == 2
+
+
+def test_history_group_plays_by_show():
+    """Multi-episode series plays are collapsed into one group; single plays and movies stay unwrapped."""
+    from dion.history_view import format_series_group_choice, group_plays_by_show
+
+    plays = [
+        {
+            "id": 3, "imdb_id": "tt1632701", "media_type": "series",
+            "title": "Suits", "year": 2011, "season": 2, "episode": 1,
+            "episode_title": "She Knows", "watched_at": "2026-11-24T19:50:00+00:00",
+        },
+        {
+            "id": 2, "imdb_id": "tt1375666", "media_type": "movie",
+            "title": "Inception", "year": 2010, "season": None, "episode": None,
+            "watched_at": "2026-11-23T20:00:00+00:00",
+        },
+        {
+            "id": 1, "imdb_id": "tt1632701", "media_type": "series",
+            "title": "Suits", "year": 2011, "season": 1, "episode": 1,
+            "episode_title": "Pilot", "watched_at": "2026-11-24T19:50:00+00:00",
+        },
+        {
+            "id": 4, "imdb_id": "tt0903747", "media_type": "series",
+            "title": "Breaking Bad", "year": 2008, "season": 1, "episode": 1,
+            "episode_title": "Pilot", "watched_at": "2026-11-20T18:00:00+00:00",
+        },
+    ]
+
+    grouped = group_plays_by_show(plays)
+    assert len(grouped) == 3
+
+    # First item is grouped Suits (2 plays)
+    assert grouped[0].get("_grouped_series") is True
+    assert len(grouped[0]["plays"]) == 2
+    label = format_series_group_choice(grouped[0])
+    assert "Suits (2011)" in label
+    assert "2 episodes (S01E01–S02E01)" in label
+
+    # Second item is movie Inception (unwrapped)
+    assert grouped[1].get("_grouped_series") is None
+    assert grouped[1]["title"] == "Inception"
+
+    # Third item is single-play Breaking Bad (unwrapped)
+    assert grouped[2].get("_grouped_series") is None
+    assert grouped[2]["title"] == "Breaking Bad"
+
+
+def test_select_from_history_group_toggle_and_drilldown(tmp_path: Path):
+    """Verify [g] toggles between grouped and flat history views, and selecting a group drills down."""
+    history_mgr = HistoryManager(config_dir=tmp_path)
+    suits = MediaItem(id="tt1632701", imdb_id="tt1632701", title="Suits", media_type=MediaType.SERIES, year=2011)
+    history_mgr.record_play(suits, episode=EpisodeItem(id="ep1", season=1, episode=1, title="Pilot"))
+    history_mgr.record_play(suits, episode=EpisodeItem(id="ep2", season=1, episode=2, title="Errors and Omissions"))
+
+    captured_calls = []
+
+    def fake_prompt_select(prompt, choices, on_info=None, on_watch=None, refresh_choices=None, on_toggle=None):
+        prompt_str = prompt() if callable(prompt) else prompt
+        captured_calls.append((prompt_str, len(choices), on_toggle is not None))
+        if len(captured_calls) == 1:
+            # First call is top-level grouped view: trigger [g] toggle -> refresh -> toggle back
+            assert "Grouped" in prompt_str
+            assert len(choices) == 1
+            key, label_fn, toggle_cb = on_toggle
+            assert key == "g"
+            assert "All plays: [g]" in label_fn()
+
+            toggle_cb()
+            flat_choices = refresh_choices()
+            assert len(flat_choices) == 2
+            assert "Group by show: [g]" in label_fn()
+            assert "All Plays" in prompt()
+
+            # Toggle back to grouped and select the grouped Suits entry
+            toggle_cb()
+            grouped_choices = refresh_choices()
+            assert len(grouped_choices) == 1
+            return grouped_choices[0][1]
+        else:
+            # Second call is drill-down into Suits episodes
+            assert "Suits (2011)" in prompt_str
+            # 2 episodes + "Back to History"
+            assert len(choices) == 3
+            return choices[0][1]
+
+    with patch("dion.history_view.prompt_select", side_effect=fake_prompt_select):
+        picked = select_from_history(history_mgr)
+
+    assert picked is not None
+    assert picked["imdb_id"] == "tt1632701"
+    assert len(captured_calls) == 2

@@ -152,6 +152,9 @@ pip install -e .
 
 # Or install with pipx for an isolated CLI environment
 pipx install .
+
+# Or install directly with pipx from GitHub (no local clone needed)
+pipx install git+https://github.com/tomer6285/dion.git
 ```
 
 Verify your installation:

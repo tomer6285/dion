@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 import zipfile
 
 import httpx
@@ -30,6 +31,7 @@ from .console import console
 
 GITHUB_REPO = "tomer6285/dion"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_GIT_URL = f"git+https://github.com/{GITHUB_REPO}.git"
 
 
 class InstallType(str, Enum):
@@ -282,6 +284,70 @@ def _replace_binary(new_binary: Path, target_path: Path) -> None:
         temp_dest.replace(target_path)
 
 
+def _resolve_local_path(spec: str) -> Optional[Path]:
+    """Return a local filesystem Path if spec points to a local path or file:// URI, else None."""
+    if not spec:
+        return None
+    if spec.startswith(("git+", "http://", "https://", "ssh://")):
+        return None
+    if spec.startswith("file://"):
+        parsed = urlparse(spec)
+        return Path(unquote(parsed.path)).expanduser()
+    if os.sep in spec or "/" in spec or "\\" in spec or spec.startswith((".", "~")):
+        return Path(spec).expanduser()
+    return None
+
+
+def _pull_git_repo(repo_dir: Path) -> bool:
+    """Safely fetch and fast-forward pull a local git repository. Returns True on success."""
+    git_bin = shutil.which("git")
+    if not git_bin:
+        console.print("[yellow]git is not installed in PATH; cannot pull local repository.[/yellow]")
+        return False
+
+    status_res = subprocess.run(
+        [git_bin, "-C", str(repo_dir), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    if status_res.returncode != 0:
+        err_msg = status_res.stderr.strip() or "git status failed"
+        console.print(f"[yellow]Could not inspect local git repository:[/yellow] {err_msg}")
+        return False
+
+    if status_res.stdout.strip():
+        console.print(
+            "[yellow]Local repository has uncommitted changes; skipping git pull to avoid overwriting your work.[/yellow]"
+        )
+        return False
+
+    with console.status("[bold cyan]Fetching latest changes from origin...[/bold cyan]"):
+        fetch_res = subprocess.run(
+            [git_bin, "-C", str(repo_dir), "fetch", "origin"],
+            capture_output=True,
+            text=True,
+        )
+    if fetch_res.returncode != 0:
+        err_msg = fetch_res.stderr.strip() or "git fetch failed"
+        console.print(f"[bold red]✕ git fetch failed:[/bold red] {err_msg}")
+        return False
+
+    pull_res = subprocess.run(
+        [git_bin, "-C", str(repo_dir), "pull", "--ff-only"],
+        capture_output=True,
+        text=True,
+    )
+    if pull_res.returncode != 0:
+        err_msg = pull_res.stderr.strip() or "git pull --ff-only failed"
+        console.print(f"[yellow]Fast-forward pull failed:[/yellow] {err_msg}")
+        return False
+
+    pull_out = pull_res.stdout.strip()
+    if pull_out:
+        console.print(f"[dim]{pull_out}[/dim]")
+    return True
+
+
 def update_pipx(force: bool = False) -> None:
     """Update Dion when running in a pipx-managed environment."""
     pipx_meta_path = Path(sys.prefix) / "pipx_metadata.json"
@@ -299,6 +365,33 @@ def update_pipx(force: bool = False) -> None:
                 is_git_or_url = True
         except Exception:
             pass
+
+    local_path = _resolve_local_path(package_spec)
+    if local_path is not None:
+        if not local_path.exists():
+            console.print(
+                f"[yellow]Local repository at [bold]{local_path}[/bold] no longer exists; "
+                f"updating from GitHub instead.[/yellow]"
+            )
+            package_spec = GITHUB_GIT_URL
+            is_git_or_url = True
+        elif (local_path / ".git").exists():
+            if _pull_git_repo(local_path):
+                package_spec = str(local_path)
+                is_git_or_url = True
+            else:
+                console.print(
+                    "[yellow]Falling back to GitHub repository so your local checkout is left untouched.[/yellow]"
+                )
+                package_spec = GITHUB_GIT_URL
+                is_git_or_url = True
+        else:
+            console.print(
+                f"[yellow]Local path [bold]{local_path}[/bold] is not a git repository; "
+                f"updating from GitHub instead.[/yellow]"
+            )
+            package_spec = GITHUB_GIT_URL
+            is_git_or_url = True
 
     pipx_bin = shutil.which("pipx")
 
@@ -334,6 +427,48 @@ def update_pipx(force: bool = False) -> None:
             console.print(f"[bold red]✕ Failed to upgrade via pip:[/bold red] {err}")
 
 
+def update_source(force: bool = False) -> None:
+    """Update Dion when running from a local git source repository."""
+    dion_root = Path(__file__).resolve().parent.parent
+    if not _pull_git_repo(dion_root):
+        console.print(
+            "\nTo update manually, resolve any local changes and run:\n\n"
+            "  [bold white]git pull && pip install -e .[/bold white]\n"
+        )
+        return
+
+    cmd = [sys.executable, "-m", "pip", "install", "-e", str(dion_root)]
+    if force:
+        cmd.insert(4, "--force-reinstall")
+    console.print(f"[cyan]Running:[/cyan] [bold white]{' '.join(cmd)}[/bold white]\n")
+    try:
+        res = subprocess.run(cmd)
+        if res.returncode == 0:
+            console.print("\n[bold green]✓ Successfully updated Dion from source![/bold green]")
+        else:
+            console.print(f"\n[bold red]✕ pip install returned non-zero exit code {res.returncode}[/bold red]")
+    except Exception as err:
+        console.print(f"[bold red]✕ Failed to update source install:[/bold red] {err}")
+
+
+def update_pip(force: bool = False) -> None:
+    """Update Dion when installed via pip (e.g. non-editable `pip install .`) from GitHub."""
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
+    if force:
+        cmd.append("--force-reinstall")
+    cmd.append(GITHUB_GIT_URL)
+
+    console.print(f"[cyan]Running:[/cyan] [bold white]{' '.join(cmd)}[/bold white]\n")
+    try:
+        res = subprocess.run(cmd)
+        if res.returncode == 0:
+            console.print("\n[bold green]✓ Successfully upgraded Dion via pip![/bold green]")
+        else:
+            console.print(f"\n[bold red]✕ pip upgrade returned non-zero exit code {res.returncode}[/bold red]")
+    except Exception as err:
+        console.print(f"[bold red]✕ Failed to upgrade via pip:[/bold red] {err}")
+
+
 def run_self_update(force: bool = False) -> None:
     """Entry point for `dion -U` / `dion --update`."""
     install_type = detect_install_type()
@@ -350,18 +485,8 @@ def run_self_update(force: bool = False) -> None:
     elif install_type == InstallType.PIPX:
         update_pipx(force=force)
     elif install_type == InstallType.SOURCE:
-        console.print(
-            "[yellow]Dion is running from a local git source repository.[/yellow]\n"
-            "To update your development installation, pull latest changes:\n\n"
-            "  [bold white]git pull && pip install -e .[/bold white]\n"
-        )
+        update_source(force=force)
     elif install_type == InstallType.PIP:
-        console.print(
-            "[yellow]Dion is installed in a standard Python environment via pip.[/yellow]\n"
-            "To upgrade, run:\n\n"
-            "  [bold white]pip install --upgrade dion[/bold white]\n"
-            "Or to upgrade inside your active python environment:\n"
-            f"  [bold white]{sys.executable} -m pip install --upgrade dion[/bold white]\n"
-        )
+        update_pip(force=force)
     else:
         console.print("[yellow]Unknown installation method. Please update manually.[/yellow]")

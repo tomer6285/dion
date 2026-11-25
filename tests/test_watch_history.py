@@ -762,10 +762,12 @@ def test_cli_short_help_and_uppercase_history_flags(tmp_path: Path):
         mock_auth.return_value.has_credentials.return_value = False
 
         import re
+        from dion.ui import strip_ansi
         res_h = runner.invoke(app, ["-h"])
         assert res_h.exit_code == 0
-        assert re.search(r"--history\s+-H", res_h.stdout)
-        assert re.search(r"--help\s+-h", res_h.stdout)
+        plain_stdout = strip_ansi(res_h.stdout)
+        assert re.search(r"--history\s+-H", plain_stdout)
+        assert re.search(r"--help\s+-h", plain_stdout)
         mock_select_history.assert_not_called()
 
         res_H = runner.invoke(app, ["-H"])

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 import questionary
 from prompt_toolkit.formatted_text import ANSI
@@ -118,17 +118,19 @@ def prompt_manual_watch_date() -> str:
 
 
 def fzf_select(
-    prompt: str,
+    prompt: Union[str, Callable[[], str]],
     choices: List[Tuple[str, T]],
     on_info: Optional[Callable[[T], None]] = None,
     on_watch: Optional[Callable[[T], None]] = None,
     refresh_choices: Optional[Callable[[], List[Tuple[str, T]]]] = None,
+    on_toggle: Optional[Tuple[str, Union[str, Callable[[], str]], Callable[[], None]]] = None,
 ) -> Optional[T]:
     """Run interactive fuzzy selection using fzf."""
     if not choices:
         return None
 
     while True:
+        prompt_text = prompt() if callable(prompt) else prompt
         lookup: Dict[str, T] = {}
         lines: List[str] = []
         for display_str, val in choices:
@@ -144,6 +146,11 @@ def fzf_select(
             nav_parts.append("Watched: [w]")
         if on_info:
             nav_parts.append("Info: [i]")
+        toggle_key = None
+        toggle_cb = None
+        if on_toggle:
+            toggle_key, toggle_label, toggle_cb = on_toggle
+            nav_parts.append(toggle_label() if callable(toggle_label) else toggle_label)
         nav_parts.append("Cancel: [Esc]")
         header = "  ·  ".join(nav_parts)
 
@@ -152,7 +159,7 @@ def fzf_select(
             "--ansi",
             "--reverse",
             "--height=50%",
-            f"--prompt={prompt} > ",
+            f"--prompt={prompt_text} > ",
             f"--header={header}",
             "--cycle",
             "--no-multi",
@@ -162,6 +169,8 @@ def fzf_select(
             expects.append("i")
         if on_watch:
             expects.append("w")
+        if toggle_key:
+            expects.append(toggle_key)
         if expects:
             cmd.append(f"--expect={','.join(expects)}")
 
@@ -179,26 +188,33 @@ def fzf_select(
                 return None
 
             lines_out = raw.splitlines()
-            if expects and len(lines_out) >= 2:
+            if expects and lines_out:
                 key = lines_out[0].strip()
-                selected_line = lines_out[1].strip()
-                val = lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
-                if key == "i" and on_info and val is not None:
-                    console.clear()
-                    on_info(val)
-                    wait_for_any_key()
-                    console.clear()
-                    if refresh_choices:
-                        choices = refresh_choices()
-                    continue
-                elif key == "w" and on_watch and val is not None:
-                    on_watch(val)
+                if toggle_key and key == toggle_key and toggle_cb:
+                    toggle_cb()
                     if refresh_choices:
                         choices = refresh_choices()
                     console.clear()
                     continue
-                elif val is not None:
-                    return val
+                if len(lines_out) >= 2:
+                    selected_line = lines_out[1].strip()
+                    val = lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
+                    if key == "i" and on_info and val is not None:
+                        console.clear()
+                        on_info(val)
+                        wait_for_any_key()
+                        console.clear()
+                        if refresh_choices:
+                            choices = refresh_choices()
+                        continue
+                    elif key == "w" and on_watch and val is not None:
+                        on_watch(val)
+                        if refresh_choices:
+                            choices = refresh_choices()
+                        console.clear()
+                        continue
+                    elif val is not None:
+                        return val
             elif lines_out:
                 selected_line = lines_out[0].strip()
                 return lookup.get(selected_line) or lookup.get(strip_ansi(selected_line))
@@ -210,32 +226,40 @@ def fzf_select(
                 on_info=on_info,
                 on_watch=on_watch,
                 refresh_choices=refresh_choices,
+                on_toggle=on_toggle,
             )
 
 
 def questionary_select(
-    prompt: str,
+    prompt: Union[str, Callable[[], str]],
     choices: List[Tuple[str, T]],
     on_info: Optional[Callable[[T], None]] = None,
     on_watch: Optional[Callable[[T], None]] = None,
     refresh_choices: Optional[Callable[[], List[Tuple[str, T]]]] = None,
+    on_toggle: Optional[Tuple[str, Union[str, Callable[[], str]], Callable[[], None]]] = None,
 ) -> Optional[T]:
     """Fallback interactive arrow-key selection using questionary."""
     if not choices:
         return None
 
     while True:
+        prompt_text = prompt() if callable(prompt) else prompt
         q_choices = [questionary.Choice(title=ANSI(display), value=val) for display, val in choices]
         inst_parts = ["Use arrows or j/k to navigate"]
         if on_watch:
             inst_parts.append("[w] for watched toggle")
         if on_info:
             inst_parts.append("[i] for info")
+        toggle_key = None
+        toggle_cb = None
+        if on_toggle:
+            toggle_key, toggle_label, toggle_cb = on_toggle
+            inst_parts.append(toggle_label() if callable(toggle_label) else toggle_label)
         inst_parts.append("Enter to select")
         instruction = f"({', '.join(inst_parts)})"
 
         q = questionary.select(
-            message=prompt,
+            message=prompt_text,
             choices=q_choices,
             use_jk_keys=True,
             instruction=instruction,
@@ -270,6 +294,11 @@ def questionary_select(
                     val = control.get_pointed_at().value
                     event.app.exit(result=("__watch__", val))
 
+            if toggle_key:
+                @q.application.key_bindings.add(toggle_key, eager=True)
+                def _t(event):
+                    event.app.exit(result="__toggle__")
+
         from .trakt.background import (
             register_sync_refresh_listener,
             unregister_sync_refresh_listener,
@@ -291,6 +320,12 @@ def questionary_select(
             res = q.ask()
             if res == "__sync_refresh__" and refresh_choices:
                 choices = refresh_choices()
+                console.clear()
+                continue
+            if res == "__toggle__" and toggle_cb:
+                toggle_cb()
+                if refresh_choices:
+                    choices = refresh_choices()
                 console.clear()
                 continue
             if isinstance(res, tuple) and len(res) == 2:
@@ -319,16 +354,31 @@ def questionary_select(
 
 
 def prompt_select(
-    prompt: str,
+    prompt: Union[str, Callable[[], str]],
     choices: List[Tuple[str, T]],
     on_info: Optional[Callable[[T], None]] = None,
     on_watch: Optional[Callable[[T], None]] = None,
     refresh_choices: Optional[Callable[[], List[Tuple[str, T]]]] = None,
+    on_toggle: Optional[Tuple[str, Union[str, Callable[[], str]], Callable[[], None]]] = None,
 ) -> Optional[T]:
     """Select an item using fzf if available, otherwise questionary."""
     if has_fzf():
-        return fzf_select(prompt, choices, on_info=on_info, on_watch=on_watch, refresh_choices=refresh_choices)
-    return questionary_select(prompt, choices, on_info=on_info, on_watch=on_watch, refresh_choices=refresh_choices)
+        return fzf_select(
+            prompt,
+            choices,
+            on_info=on_info,
+            on_watch=on_watch,
+            refresh_choices=refresh_choices,
+            on_toggle=on_toggle,
+        )
+    return questionary_select(
+        prompt,
+        choices,
+        on_info=on_info,
+        on_watch=on_watch,
+        refresh_choices=refresh_choices,
+        on_toggle=on_toggle,
+    )
 
 
 def format_relative_time(iso_str: Optional[str]) -> str:

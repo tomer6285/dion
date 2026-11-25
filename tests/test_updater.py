@@ -10,12 +10,16 @@ from unittest.mock import MagicMock, patch
 
 from dion import updater
 from dion.updater import (
+    GITHUB_GIT_URL,
     InstallType,
+    _pull_git_repo,
     detect_install_type,
     get_standalone_target_path,
     parse_version,
     select_release_asset,
+    update_pip,
     update_pipx,
+    update_source,
     update_standalone,
 )
 
@@ -167,6 +171,144 @@ class TestUpdater(unittest.TestCase):
             with patch.object(sys, "prefix", tmp_dir):
                 update_pipx()
                 mock_run.assert_called_once_with([sys.executable, "-m", "pip", "install", "--upgrade", "dion"])
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_pipx_deleted_local_repo_falls_back_to_github(self, mock_run, mock_which):
+        mock_which.return_value = "/usr/bin/pipx"
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            missing_repo = Path(tmp_dir) / "deleted-dion"
+            meta = Path(tmp_dir) / "pipx_metadata.json"
+            meta.write_text(
+                json.dumps({"main_package": {"package_or_url": str(missing_repo)}}),
+                encoding="utf-8",
+            )
+            with patch.object(sys, "prefix", tmp_dir):
+                update_pipx()
+                mock_run.assert_called_once_with(
+                    ["/usr/bin/pipx", "install", "--force", GITHUB_GIT_URL]
+                )
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_pipx_deleted_file_uri_falls_back_to_github(self, mock_run, mock_which):
+        mock_which.return_value = "/usr/bin/pipx"
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            missing_repo = Path(tmp_dir) / "deleted-dion"
+            meta = Path(tmp_dir) / "pipx_metadata.json"
+            meta.write_text(
+                json.dumps({"main_package": {"package_or_url": missing_repo.as_uri()}}),
+                encoding="utf-8",
+            )
+            with patch.object(sys, "prefix", tmp_dir):
+                update_pipx()
+                mock_run.assert_called_once_with(
+                    ["/usr/bin/pipx", "install", "--force", GITHUB_GIT_URL]
+                )
+
+    @patch("dion.updater._pull_git_repo", return_value=True)
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_pipx_existing_local_repo_pulls_first(self, mock_run, mock_which, mock_pull):
+        mock_which.return_value = "/usr/bin/pipx"
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_dir = Path(tmp_dir) / "dion-repo"
+            (repo_dir / ".git").mkdir(parents=True)
+            meta = Path(tmp_dir) / "pipx_metadata.json"
+            meta.write_text(
+                json.dumps({"main_package": {"package_or_url": str(repo_dir)}}),
+                encoding="utf-8",
+            )
+            with patch.object(sys, "prefix", tmp_dir):
+                update_pipx()
+                mock_pull.assert_called_once_with(repo_dir)
+                mock_run.assert_called_once_with(
+                    ["/usr/bin/pipx", "install", "--force", str(repo_dir)]
+                )
+
+    @patch("dion.updater._pull_git_repo", return_value=False)
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_pipx_dirty_local_repo_falls_back_to_github(self, mock_run, mock_which, mock_pull):
+        mock_which.return_value = "/usr/bin/pipx"
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_dir = Path(tmp_dir) / "dion-repo"
+            (repo_dir / ".git").mkdir(parents=True)
+            meta = Path(tmp_dir) / "pipx_metadata.json"
+            meta.write_text(
+                json.dumps({"main_package": {"package_or_url": str(repo_dir)}}),
+                encoding="utf-8",
+            )
+            with patch.object(sys, "prefix", tmp_dir):
+                update_pipx()
+                mock_pull.assert_called_once_with(repo_dir)
+                mock_run.assert_called_once_with(
+                    ["/usr/bin/pipx", "install", "--force", GITHUB_GIT_URL]
+                )
+
+    @patch("shutil.which", return_value="/usr/bin/git")
+    @patch("subprocess.run")
+    def test_pull_git_repo_clean_success(self, mock_run, mock_which):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),  # git status --porcelain
+            MagicMock(returncode=0, stdout="", stderr=""),  # git fetch origin
+            MagicMock(returncode=0, stdout="Already up to date.\n", stderr=""),  # git pull --ff-only
+        ]
+        repo_dir = Path("/tmp/fake-repo")
+        self.assertTrue(_pull_git_repo(repo_dir))
+        self.assertEqual(mock_run.call_count, 3)
+
+    @patch("shutil.which", return_value="/usr/bin/git")
+    @patch("subprocess.run")
+    def test_pull_git_repo_dirty_skips_pull(self, mock_run, mock_which):
+        mock_run.return_value = MagicMock(returncode=0, stdout=" M dion/cli.py\n", stderr="")
+        repo_dir = Path("/tmp/fake-repo")
+        self.assertFalse(_pull_git_repo(repo_dir))
+        mock_run.assert_called_once()
+
+    @patch("shutil.which", return_value=None)
+    def test_pull_git_repo_no_git_binary(self, mock_which):
+        self.assertFalse(_pull_git_repo(Path("/tmp/fake-repo")))
+
+    @patch("dion.updater._pull_git_repo", return_value=True)
+    @patch("subprocess.run")
+    def test_update_source_success(self, mock_run, mock_pull):
+        mock_run.return_value = MagicMock(returncode=0)
+        expected_root = str(Path(updater.__file__).resolve().parent.parent)
+        update_source(force=False)
+        mock_pull.assert_called_once()
+        mock_run.assert_called_once_with([sys.executable, "-m", "pip", "install", "-e", expected_root])
+
+    @patch("dion.updater._pull_git_repo", return_value=False)
+    @patch("subprocess.run")
+    def test_update_source_skips_install_if_pull_fails(self, mock_run, mock_pull):
+        update_source(force=False)
+        mock_pull.assert_called_once()
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_update_pip_uses_github_git_url(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        update_pip(force=False)
+        mock_run.assert_called_once_with(
+            [sys.executable, "-m", "pip", "install", "--upgrade", GITHUB_GIT_URL]
+        )
+
+    @patch("subprocess.run")
+    def test_update_pip_force(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        update_pip(force=True)
+        mock_run.assert_called_once_with(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", GITHUB_GIT_URL]
+        )
 
 
 class TestCliUpdateFlag(unittest.TestCase):

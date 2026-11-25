@@ -27,45 +27,78 @@ class ProviderManager:
         ]
         self.subtitle_resolver = SubtitleResolver(settings_mgr=self.settings_mgr)
 
-    def resolve_movie(
+    def _resolve_sources(
         self,
         imdb_id: str,
         title: str,
-        year: Optional[str] = None,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        released: Optional[str] = None,
         preferred_langs: Optional[List[str]] = None,
+        exclude_providers: Optional[Set[str]] = None,
     ) -> List[StreamSource]:
-        """Resolve all working stream sources for a movie."""
+        """Resolve stream sources across providers with optional exclusion and subtitle attachment."""
         effective_langs = preferred_langs
         if effective_langs is None:
             user_lang = self.settings_mgr.sub_lang or "en"
             effective_langs = [user_lang, "en", "eng", "English"]
 
-        # Initiate parallel background subtitle prefetching immediately
-        if preferred_langs is not None:
-            self.subtitle_resolver.prefetch_subtitles(
-                imdb_id=imdb_id, released=year, preferred_langs=preferred_langs
-            )
-        else:
-            self.subtitle_resolver.prefetch_subtitles(imdb_id=imdb_id, released=year)
+        is_episode = season is not None and episode is not None
+        if not exclude_providers:
+            prefetch_kwargs = {"imdb_id": imdb_id, "released": released}
+            if is_episode:
+                prefetch_kwargs["season"] = season
+                prefetch_kwargs["episode"] = episode
+            if preferred_langs is not None:
+                prefetch_kwargs["preferred_langs"] = preferred_langs
+            self.subtitle_resolver.prefetch_subtitles(**prefetch_kwargs)
 
+        excluded = {p.lower() for p in exclude_providers} if exclude_providers else set()
         sources: List[StreamSource] = []
 
         for provider in self.providers:
+            provider_name = getattr(provider, "name", "").lower()
+            if provider_name and provider_name in excluded:
+                continue
             try:
-                found = provider.resolve_movie(imdb_id, title)
+                if is_episode:
+                    found = provider.resolve_episode(imdb_id, season, episode, title)
+                else:
+                    found = provider.resolve_movie(imdb_id, title)
                 sources.extend(found)
                 if sources:
                     break
             except Exception:
                 continue
 
-        # Fetch extra subtitles if available and needed
         if sources:
             self._attach_subtitles(
-                sources, imdb_id, released=year, preferred_langs=effective_langs
+                sources,
+                imdb_id,
+                season=season if is_episode else None,
+                episode=episode if is_episode else None,
+                released=released,
+                preferred_langs=effective_langs,
             )
 
         return sources
+
+    def resolve_movie(
+        self,
+        imdb_id: str,
+        title: str,
+        year: Optional[str] = None,
+        preferred_langs: Optional[List[str]] = None,
+        exclude_providers: Optional[Set[str]] = None,
+    ) -> List[StreamSource]:
+        """Resolve all working stream sources for a movie."""
+        return self._resolve_sources(
+            imdb_id=imdb_id,
+            title=title,
+            released=year,
+            preferred_langs=preferred_langs,
+            exclude_providers=exclude_providers,
+        )
 
     def resolve_episode(
         self,
@@ -75,50 +108,18 @@ class ProviderManager:
         title: str,
         released: Optional[str] = None,
         preferred_langs: Optional[List[str]] = None,
+        exclude_providers: Optional[Set[str]] = None,
     ) -> List[StreamSource]:
         """Resolve all working stream sources for a TV series episode."""
-        effective_langs = preferred_langs
-        if effective_langs is None:
-            user_lang = self.settings_mgr.sub_lang or "en"
-            effective_langs = [user_lang, "en", "eng", "English"]
-
-        # Initiate parallel background subtitle prefetching immediately
-        if preferred_langs is not None:
-            self.subtitle_resolver.prefetch_subtitles(
-                imdb_id=imdb_id,
-                season=season,
-                episode=episode,
-                released=released,
-                preferred_langs=preferred_langs,
-            )
-        else:
-            self.subtitle_resolver.prefetch_subtitles(
-                imdb_id=imdb_id, season=season, episode=episode, released=released
-            )
-
-        sources: List[StreamSource] = []
-
-        for provider in self.providers:
-            try:
-                found = provider.resolve_episode(imdb_id, season, episode, title)
-                sources.extend(found)
-                if sources:
-                    break
-            except Exception:
-                continue
-
-        # Fetch extra subtitles if available and needed
-        if sources:
-            self._attach_subtitles(
-                sources,
-                imdb_id,
-                season=season,
-                episode=episode,
-                released=released,
-                preferred_langs=effective_langs,
-            )
-
-        return sources
+        return self._resolve_sources(
+            imdb_id=imdb_id,
+            title=title,
+            season=season,
+            episode=episode,
+            released=released,
+            preferred_langs=preferred_langs,
+            exclude_providers=exclude_providers,
+        )
 
     def _has_hls_embedded_subtitles(
         self, source: StreamSource, pref_set: Set[str]

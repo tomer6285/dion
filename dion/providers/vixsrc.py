@@ -41,6 +41,19 @@ class VixSrcProvider(BaseProvider):
         if self._client and not self._client.is_closed:
             self._client.close()
 
+    @staticmethod
+    def _build_playlist_url(
+        base_url: str, token: str, expires: str, can_fhd: bool
+    ) -> str:
+        """Append VixSrc auth query params, adding h=1 only when FHD is enabled."""
+        if not (token and expires):
+            return base_url
+        sep = "&" if "?" in base_url else "?"
+        url = f"{base_url}{sep}token={token}&expires={expires}"
+        if can_fhd:
+            url += "&h=1"
+        return url
+
     def _resolve(self, path: str) -> List[StreamSource]:
         api_url = f"{self.BASE_URL}/api/{path}"
         try:
@@ -62,6 +75,7 @@ class VixSrcProvider(BaseProvider):
             expires_m = re.search(r'expires[\"\']\s*:\s*[\"\']([^\"\']+)', html)
             token = token_m.group(1) if token_m else ""
             expires = expires_m.group(1) if expires_m else ""
+            can_fhd = bool(re.search(r'window\.canPlayFHD\s*=\s*true\b', html, re.IGNORECASE))
 
             # Check if token is expired
             if expires:
@@ -84,7 +98,7 @@ class VixSrcProvider(BaseProvider):
 
             headers = {
                 "User-Agent": self.headers["User-Agent"],
-                "Referer": api_url,
+                "Referer": embed_url,
             }
 
             if stream_entries:
@@ -93,18 +107,13 @@ class VixSrcProvider(BaseProvider):
                     s_url = entry.get("url")
                     if not s_url:
                         continue
-                    sep = "&" if "?" in s_url else "?"
-                    full_url = (
-                        f"{s_url}{sep}token={token}&expires={expires}&h=1"
-                        if token and expires
-                        else s_url
-                    )
+                    full_url = self._build_playlist_url(s_url, token, expires, can_fhd)
                     sources.append(
                         StreamSource(
                             url=full_url,
                             server=f"vixsrc-{s_name}",
                             is_hls=True,
-                            quality="1080p",
+                            quality="1080p" if can_fhd else "720p",
                             headers=headers,
                         )
                     )
@@ -112,18 +121,13 @@ class VixSrcProvider(BaseProvider):
                 pl_m = re.search(r'url\s*:\s*[\"\']([^\"\']+)', html)
                 if pl_m:
                     pl = pl_m.group(1)
-                    sep = "&" if "?" in pl else "?"
-                    full_url = (
-                        f"{pl}{sep}token={token}&expires={expires}&h=1"
-                        if token and expires
-                        else pl
-                    )
+                    full_url = self._build_playlist_url(pl, token, expires, can_fhd)
                     sources.append(
                         StreamSource(
                             url=full_url,
                             server="vixsrc",
                             is_hls=True,
-                            quality="1080p",
+                            quality="1080p" if can_fhd else "720p",
                             headers=headers,
                         )
                     )

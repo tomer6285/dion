@@ -204,10 +204,19 @@ def play_or_download(
         preferred_langs=[settings_mgr.sub_lang, "en", "eng", "English"],
     )
 
-    with console.status("[bold cyan]Resolving streaming sources...[/bold cyan]"):
-        pref_langs = [settings_mgr.sub_lang, "en", "eng", "English"]
+    def _resolve_sources(exclude_providers: Optional[set[str]] = None):
         if episode:
-            sources = pm.resolve_episode(
+            if exclude_providers:
+                return pm.resolve_episode(
+                    media.imdb_id,
+                    episode.season,
+                    episode.episode,
+                    media.title,
+                    released=episode.released,
+                    preferred_langs=pref_langs,
+                    exclude_providers=exclude_providers,
+                )
+            return pm.resolve_episode(
                 media.imdb_id,
                 episode.season,
                 episode.episode,
@@ -215,18 +224,30 @@ def play_or_download(
                 released=episode.released,
                 preferred_langs=pref_langs,
             )
-        else:
-            sources = pm.resolve_movie(
+        if exclude_providers:
+            return pm.resolve_movie(
                 media.imdb_id,
                 media.title,
                 year=media.year,
                 preferred_langs=pref_langs,
+                exclude_providers=exclude_providers,
             )
+        return pm.resolve_movie(
+            media.imdb_id,
+            media.title,
+            year=media.year,
+            preferred_langs=pref_langs,
+        )
+
+    with console.status("[bold cyan]Resolving streaming sources...[/bold cyan]"):
+        pref_langs = [settings_mgr.sub_lang, "en", "eng", "English"]
+        sources = _resolve_sources()
 
     if not sources:
         console.print("[bold red]✕ No active stream sources found for this title.[/bold red]")
         return False
 
+    tried_providers: set[str] = set()
     while sources:
         # Choose source
         source = sources[0] if (auto_select or len(sources) == 1) else select_source(sources)
@@ -383,12 +404,33 @@ def play_or_download(
                 console.clear()
                 return True
 
+            if getattr(source, "server", None):
+                src_provider = source.server.split("-", 1)[0].lower()
+                for p in getattr(pm, "providers", []):
+                    pname = getattr(p, "name", "").lower()
+                    if pname:
+                        tried_providers.add(pname)
+                    if pname == src_provider:
+                        break
+                tried_providers.add(src_provider)
             sources = [s for s in sources if s != source]
             if sources:
                 console.print(
                     f"\n[yellow]⚠️ Source [{source.server.upper()}] encountered an issue. Trying remaining servers...[/yellow]"
                 )
                 continue
+
+            providers_list = getattr(pm, "providers", None)
+            if isinstance(providers_list, list) and len(tried_providers) < len(providers_list):
+                with console.status("[bold cyan]Trying fallback providers...[/bold cyan]"):
+                    sources = _resolve_sources(exclude_providers=tried_providers)
+                if sources:
+                    console.print(
+                        "\n[yellow]⚠️ Switching to fallback provider...[/yellow]"
+                    )
+                    continue
+
+            console.print("[bold red]✕ Playback failed: all available stream sources encountered an error.[/bold red]")
             return False
 
     return False
@@ -727,7 +769,7 @@ def main(
         False, "-c", "--continue", help="Continue watching the last title."
     ),
     show_history: bool = typer.Option(
-        False, "--history", help="Browse and play from watch history."
+        False, "-H", "--history", help="Browse and play from watch history."
     ),
     delete_history: bool = typer.Option(
         False, "-D", "--delete-history", help="Delete watch history."

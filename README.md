@@ -200,6 +200,8 @@ dion -c
 dion --continue
 
 # Browse and select from your recent watch history
+dion -H
+# (or)
 dion --history
 
 # Clear your watch history
@@ -330,7 +332,7 @@ Arguments:
 
 Options:
   -c, --continue            Continue watching the last title where you left off.
-      --history             Browse and select from recent watch history.
+  -H, --history             Browse and select from recent watch history.
   -D, --delete-history      Delete watch history.
   -S, --settings            Open settings menu to configure player, subtitles, and preferences.
   -s, --season <int>        Specific season number for TV shows.

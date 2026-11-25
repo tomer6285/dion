@@ -650,16 +650,15 @@ end)
         script_opts_str = ",".join(script_opts)
 
         if is_mpv:
-            # Suppress all terminal output
-            cmd.append("--really-quiet")
+            # Suppress interactive terminal output while keeping error diagnostics for stderr capture
             cmd.append("--terminal=no")
-            cmd.append("--msg-level=all=no")
+            cmd.append("--msg-level=all=error")
 
             # Set window title
             cmd.append(f"--title=Dion: {title_str}")
 
-            # Hardware acceleration (VideoToolbox on macOS, VAAPI/NVDEC on Linux)
-            cmd.append("--hwdec=auto")
+            # Hardware acceleration (VideoToolbox on macOS, VAAPI/NVDEC on Linux via safe whitelist)
+            cmd.append("--hwdec=auto-safe")
             cmd.append("--profile=fast")
 
             # Disable ytdl hook so mpv directly plays HLS/m3u8 streams using ffmpeg demuxer
@@ -680,11 +679,11 @@ end)
                 if k.lower() not in ("user-agent", "referer"):
                     cmd.append(f"--http-header-fields-append={k}: {v}")
 
-            # Stream connection stability & protocol whitelist for pruned local playlists
-            lavf_opts = ["reconnect=1", "reconnect_delay_max=2"]
+            # Stream connection stability & protocol whitelist for pruned local playlists.
+            # Use -append for protocol_whitelist so mpv does not split its commas across AVOptions.
+            cmd.append("--demuxer-lavf-o=reconnect=1,reconnect_delay_max=2")
             if pruned_file:
-                lavf_opts.insert(0, 'protocol_whitelist="file,http,https,tcp,tls,crypto"')
-            cmd.append(f"--demuxer-lavf-o={','.join(lavf_opts)}")
+                cmd.append("--demuxer-lavf-o-append=protocol_whitelist=file,http,https,tcp,tls,crypto")
             cmd.append("--force-window=immediate")
             cmd.append("--keep-open=no")
             cmd.append("--idle=no")
@@ -732,13 +731,12 @@ end)
 
         elif is_iina:
             cmd.append(f"--mpv-title=Dion: {title_str}")
-            cmd.append("--mpv-hwdec=auto")
+            cmd.append("--mpv-hwdec=auto-safe")
             cmd.append("--mpv-profile=fast")
-            cmd.append("--mpv-really-quiet")
-            lavf_opts = ["reconnect=1", "reconnect_delay_max=2"]
+            cmd.append("--mpv-msg-level=all=error")
+            cmd.append("--mpv-demuxer-lavf-o=reconnect=1,reconnect_delay_max=2")
             if pruned_file:
-                lavf_opts.insert(0, 'protocol_whitelist="file,http,https,tcp,tls,crypto"')
-            cmd.append(f"--mpv-demuxer-lavf-o={','.join(lavf_opts)}")
+                cmd.append("--mpv-demuxer-lavf-o-append=protocol_whitelist=file,http,https,tcp,tls,crypto")
             cmd.append("--mpv-keep-open=no")
             cmd.append("--mpv-idle=no")
             cmd.append("--mpv-cache=yes")
@@ -798,9 +796,14 @@ end)
             res = subprocess.run(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
                 check=False,
             )
+            if res.returncode not in (0, 4, -2, -15) and isinstance(res.stderr, str):
+                err_lines = [line.strip() for line in res.stderr.splitlines() if line.strip()]
+                if err_lines:
+                    console.print(f"[dim]Player details: {' | '.join(err_lines[-3:])}[/dim]")
             return res.returncode
         except KeyboardInterrupt:
             return 0

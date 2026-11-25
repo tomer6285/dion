@@ -746,3 +746,34 @@ def test_expired_token_does_not_block_launch_and_notifies_open_views(tmp_path: P
         assert len(refresh_notifications) >= 1
     finally:
         unregister_sync_refresh_listener(listener)
+
+
+def test_cli_short_help_and_uppercase_history_flags(tmp_path: Path):
+    """Verify -h runs --help while -H runs --history."""
+    from typer.testing import CliRunner
+    from dion.cli import app
+
+    runner = CliRunner()
+    history_mgr = HistoryManager(config_dir=tmp_path)
+
+    with patch("dion.cli.get_history_mgr", return_value=history_mgr), \
+         patch("dion.cli.get_trakt_auth_mgr") as mock_auth, \
+         patch("dion.history_view.select_from_history", return_value=None) as mock_select_history:
+        mock_auth.return_value.has_credentials.return_value = False
+
+        import re
+        from dion.ui import strip_ansi
+        res_h = runner.invoke(app, ["-h"])
+        assert res_h.exit_code == 0
+        plain_stdout = strip_ansi(res_h.stdout)
+        assert re.search(r"--history\s+-H", plain_stdout)
+        assert re.search(r"--help\s+-h", plain_stdout)
+        mock_select_history.assert_not_called()
+
+        res_H = runner.invoke(app, ["-H"])
+        assert res_H.exit_code == 0
+        mock_select_history.assert_called_once_with(history_mgr)
+
+        res_long = runner.invoke(app, ["--history"])
+        assert res_long.exit_code == 0
+        assert mock_select_history.call_count == 2
